@@ -153,6 +153,7 @@ class MonoDataset(data.Dataset):
         else:
             side = None
 
+        inputs["filename"] = self.filenames[index]
         for i in self.frame_idxs:
             if i == "s":
                 other_side = {"r": "l", "l": "r"}[side]
