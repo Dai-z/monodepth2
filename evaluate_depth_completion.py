@@ -63,17 +63,15 @@ def evaluate(opt):
     opt.eval_mono = 1
     opt.eval_stereo = 0
 
+    opt.load_weights_folder = os.path.expanduser(opt.load_weights_folder)
+    filenames = readlines(
+        os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
     if opt.ext_disp_to_eval is None:
-
-        opt.load_weights_folder = os.path.expanduser(opt.load_weights_folder)
-
         assert os.path.isdir(opt.load_weights_folder), \
             "Cannot find a folder at {}".format(opt.load_weights_folder)
 
         print("-> Loading weights from {}".format(opt.load_weights_folder))
 
-        filenames = readlines(
-            os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
         encoder_path = os.path.join(opt.load_weights_folder, "encoder.pth")
         decoder_path = os.path.join(opt.load_weights_folder, "depth.pth")
 
@@ -187,8 +185,20 @@ def evaluate(opt):
 
     errors = []
     ratios = []
+    stds = []
 
+    side_map = {"2": '2', "3": '3', "l": '2', "r": '3'}
     for i in range(pred_disps.shape[0]):
+
+        # Get projected velodyne depth
+        folder, frame_id, side = filenames[i].split()
+        frame_id = int(frame_id)
+        velodyne_path = os.path.join(opt.data_path, folder, "proj_depth",
+                                     "velodyne_raw", "image_0" + side_map[side],
+                                     "{:010d}.png".format(frame_id))
+        velodyne_depth = np.array(pil.open(velodyne_path)).astype(
+            np.float32) / 256
+        velodyne_mask = velodyne_depth > 0
 
         gt_depth = gt_depths[i]
         gt_height, gt_width = gt_depth.shape[:2]
@@ -199,27 +209,36 @@ def evaluate(opt):
 
         mask = gt_depth > 0
 
-        pred_depth = pred_depth[mask]
-        gt_depth = gt_depth[mask]
-
         pred_depth *= opt.pred_depth_scale_factor
         if not opt.disable_median_scaling:
-            ratio = np.median(gt_depth) / np.median(pred_depth)
+            # ratio = np.median(gt_depth) / np.median(pred_depth)
             # ratio = np.mean(gt_depth) / np.mean(pred_depth)
+
+            ratio = np.mean(velodyne_depth[velodyne_mask] /
+                             pred_depth[velodyne_mask])
+            ratio_image = velodyne_depth[velodyne_mask] / pred_depth[velodyne_mask]
+            # print('ratio std {}: {}'.format(ratio_image.mean(), np.std(ratio_image)))
+            stds.append(np.std(ratio_image))
+
             ratios.append(ratio)
             pred_depth *= ratio
+
+        pred_depth = pred_depth[mask]
+        gt_depth = gt_depth[mask]
 
         pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
         pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
 
         errors.append(compute_errors(gt_depth, pred_depth))
 
+    stds = np.array(stds)
+    print('stds, max: {}, min: {}'.format(np.max(stds), np.min(stds)))
+
     if not opt.disable_median_scaling:
         ratios = np.array(ratios)
         med = np.median(ratios)
         print(" Scaling ratios | med: {:0.3f} | std: {:0.3f}".format(
             med, np.std(ratios / med)))
-        
 
     mean_errors = np.array(errors).mean(0)
 
