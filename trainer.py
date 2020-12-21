@@ -344,7 +344,6 @@ class Trainer:
                                  axisangle[:, 0],
                                  translation[:, 0],
                                  invert=(f_i < 0))
-
         else:
             # Here we input all frames to the pose net (and predict all poses) together
             if self.opt.pose_model_type in ["separate_resnet", "posecnn"]:
@@ -450,10 +449,15 @@ class Trainer:
                     outputs[("color_identity", frame_id, scale)] = \
                         inputs[("color", frame_id, source_scale)]
 
-    def compute_reprojection_loss(self, pred, target):
+    def compute_reprojection_loss(self, pred, target, mask=None):
         """Computes reprojection loss between a batch of predicted and target images
         """
-        abs_diff = torch.abs(target - pred)
+        if not mask is None:
+            selected_target = mask * target
+            selected_pred = mask * pred
+            abs_diff = torch.abs(selected_target - selected_pred)
+        else:
+            abs_diff = torch.abs(target - pred)
         l1_loss = abs_diff.mean(1, True)
 
         if self.opt.no_ssim:
@@ -464,6 +468,15 @@ class Trainer:
 
         return reprojection_loss
 
+    def compute_sparse_loss(self, pred, lidar, mask):
+        """Computes sparse loss between a batch of predicted and lidar points
+        """
+        selected_pred = mask * pred
+        selected_lidar = mask * lidar
+        abs_diff = torch.abs(selected_lidar - selected_pred)
+        l1_loss = abs_diff.mean(1, True)
+        return l1_loss
+
     def compute_losses(self, inputs, outputs):
         """Compute the reprojection and smoothness losses for a minibatch
         """
@@ -473,6 +486,7 @@ class Trainer:
         for scale in self.opt.scales:
             loss = 0
             reprojection_losses = []
+            sparse_losses = []
 
             if self.opt.v1_multiscale:
                 source_scale = scale
@@ -485,10 +499,17 @@ class Trainer:
 
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
+                lidar = inputs[('lidar', frame_id, 0)]
+
+                lidar_mask = lidar > 0
+                sparse_losses.append(
+                    self.compute_sparse_loss(pred, lidar, lidar_mask))
+                # FIXME: Add mask
                 reprojection_losses.append(
-                    self.compute_reprojection_loss(pred, target))
+                    self.compute_reprojection_loss(pred, target))#, (lidar <= 0)))
 
             reprojection_losses = torch.cat(reprojection_losses, 1)
+            sparse_losses = torch.cat(sparse_losses, 1)
 
             if not self.opt.disable_automasking:
                 identity_reprojection_losses = []
@@ -533,8 +554,9 @@ class Trainer:
                 identity_reprojection_loss += torch.randn(
                     identity_reprojection_loss.shape).cuda() * 0.00001
 
-                combined = torch.cat(
-                    (identity_reprojection_loss, reprojection_loss), dim=1)
+                combined = torch.cat((identity_reprojection_loss,
+                                      reprojection_loss, sparse_losses),
+                                     dim=1)
             else:
                 combined = reprojection_loss
 

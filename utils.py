@@ -10,6 +10,8 @@ import hashlib
 import zipfile
 from six.moves import urllib
 
+def printc(s):
+    print('\033[36m{}\033[0m'.format(s))
 
 def readlines(filename):
     """Read all the lines in a text file and return as a list
