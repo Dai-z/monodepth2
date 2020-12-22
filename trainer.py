@@ -50,13 +50,14 @@ class Trainer:
         self.parameters_to_train = []
 
         # Device settings
-        # distributed = torch.cuda.device_count() > 1
-        distributed = True
+        distributed = torch.cuda.device_count() > 1
         if distributed:
             self.device = torch.device('cuda:{}'.format(self.opt.local_rank))
             torch.cuda.set_device(self.opt.local_rank)
-            torch.distributed.init_process_group(backend='nccl',
-                                                 init_method="env://",)
+            torch.distributed.init_process_group(
+                backend='nccl',
+                init_method="env://",
+            )
         else:
             self.device = torch.device("cpu" if self.opt.no_cuda else "cuda")
 
@@ -77,6 +78,9 @@ class Trainer:
             self.opt.num_layers,
             self.opt.weights_init == "pretrained",
             sparse=True)
+        if distributed:
+            self.models["encoder"] = nn.SyncBatchNorm.convert_sync_batchnorm(
+                self.models["encoder"])
         self.models["encoder"].to(self.device)
         if distributed:
             # self.models["encoder"] = nn.SyncBatchNorm.convert_sync_batchnorm(
@@ -111,10 +115,11 @@ class Trainer:
                 self.models["pose_encoder"] = networks.ResnetEncoder(
                     self.opt.num_layers,
                     self.opt.weights_init == "pretrained",
-                    num_input_images=self.num_pose_frames,
-                    skip_bn=True)
-                # self.models["pose_encoder"] = nn.SyncBatchNorm.convert_sync_batchnorm(
-                #     self.models["pose_encoder"])
+                    num_input_images=self.num_pose_frames)
+                if distributed:
+                    self.models[
+                        "pose_encoder"] = nn.SyncBatchNorm.convert_sync_batchnorm(
+                            self.models["pose_encoder"])
                 self.models["pose_encoder"].to(self.device)
                 if distributed:
                     self.models["pose_encoder"] = DDP(
@@ -203,7 +208,6 @@ class Trainer:
         fpath = os.path.join(os.path.dirname(__file__), "splits",
                              self.opt.split, "{}_files.txt")
 
-        # FIXME: Using test split for loading faster when debugging parallel training
         train_filenames = readlines(fpath.format("train"))
         val_filenames = readlines(fpath.format("val"))
         img_ext = '.png' if self.opt.png else '.jpg'
@@ -662,10 +666,9 @@ class Trainer:
                     identity_reprojection_loss.shape).cuda() * 0.00001
 
                 # FIXME: Add sparse loss
-                combined = torch.cat(
-                    (identity_reprojection_loss,
-                     reprojection_loss, sparse_losses),
-                    dim=1)
+                combined = torch.cat((identity_reprojection_loss,
+                                      reprojection_loss, sparse_losses),
+                                     dim=1)
             else:
                 combined = reprojection_loss
 

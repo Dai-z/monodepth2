@@ -24,11 +24,9 @@ export OMP_NUM_THREADS=$(($NUM_THREADS/$NUM_GPUS))
 python -m torch.distributed.launch \
  --nproc_per_node=$NUM_GPUS \
  --node_rank=0 \
- --master_port=2334 \
+ --master_port=2333 \
  train.py \
  --gpus $GPUS \
- --png \
- --model_name test_parallel
-
-#  --batch_size 2 \
-#  --load_weights_folder /root/tmp/mdp/models/weights_2 \
+ --png
+#  --model_name test_parallel
+#  --load_weights_folder /root/tmp/mdp/models/weights_2

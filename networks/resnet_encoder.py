@@ -165,30 +165,12 @@ class ResnetEncoder(nn.Module):
         else:
             out = self.encoder.conv1(x)
             if not self.skip_bn:
-                out = self.bn1(out)
+                out = self.encoder.bn1(out)
             self.features.append(self.encoder.relu(out))
-            # self.features.append(torch.ones([1, 64, 96, 320], device='cuda:0'))
-
-        # x = self.encoder.relu(x)
-        # self.features.append(x.clone())
-        # x = self.encoder.layer1(self.encoder.maxpool(x))
-        # self.features.append(x.clone())
-        # x = self.encoder.layer2(x)
-        # self.features.append(x.clone())
-        # x = self.encoder.layer3(x)
-        # self.features.append(x.clone())
-        # x = self.encoder.layer4(x)
-        # self.features.append(x.clone())
-
         self.features.append(
             self.encoder.layer1(self.encoder.maxpool(self.features[-1])))
         self.features.append(self.encoder.layer2(self.features[-1]))
         self.features.append(self.encoder.layer3(self.features[-1]))
         self.features.append(self.encoder.layer4(self.features[-1]))
-
-        # self.features.append(torch.ones([1, 64, 48, 160], device='cuda:0'))
-        # self.features.append(torch.ones([1, 128, 24, 80], device='cuda:0'))
-        # self.features.append(torch.ones([1, 256, 12, 40], device='cuda:0'))
-        # self.features.append(torch.ones([1,512,6,20],device='cuda:0'))
 
         return self.features
