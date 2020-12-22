@@ -19,30 +19,56 @@ class ResNetMultiImageInput(models.ResNet):
     Adapted from https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py
     """
 
-    def __init__(self, block, layers, num_classes=1000, num_input_images=1):
+    def __init__(self,
+                 block,
+                 layers,
+                 num_classes=1000,
+                 num_input_images=1,
+                 sparse=False,
+                 skip_bn=False):
         super(ResNetMultiImageInput, self).__init__(block, layers)
         self.inplanes = 64
-        self.conv_i = nn.Conv2d(3,
-                                48,
-                                kernel_size=7,
-                                stride=2,
-                                padding=3,
-                                bias=False)
-        self.bn_i = nn.BatchNorm2d(48)
-        self.conv_s = nn.Conv2d(3,
-                                16,
-                                kernel_size=7,
-                                stride=2,
-                                padding=3,
-                                bias=False)
-        self.bn_s = nn.BatchNorm2d(16)
-        self.relu = nn.ReLU(inplace=True)
+        if sparse:
+            self.conv_i = nn.Conv2d(3 * num_input_images,
+                                    48,
+                                    kernel_size=7,
+                                    stride=2,
+                                    padding=3,
+                                    bias=False)
+            self.bn_i = nn.BatchNorm2d(48)
+            self.conv_s = nn.Conv2d(3 * num_input_images,
+                                    16,
+                                    kernel_size=7,
+                                    stride=2,
+                                    padding=3,
+                                    bias=False)
+            self.bn_s = nn.BatchNorm2d(16)
+        else:
+            self.conv1 = nn.Conv2d(3 * num_input_images,
+                                   64,
+                                   kernel_size=7,
+                                   stride=2,
+                                   padding=3,
+                                   bias=False)
+            self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=False)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-
+        self.layer1 = self._make_layer(block, 64, layers[0], skip_bn=skip_bn)
+        self.layer2 = self._make_layer(block,
+                                       128,
+                                       layers[1],
+                                       stride=2,
+                                       skip_bn=skip_bn)
+        self.layer3 = self._make_layer(block,
+                                       256,
+                                       layers[2],
+                                       stride=2,
+                                       skip_bn=skip_bn)
+        self.layer4 = self._make_layer(block,
+                                       512,
+                                       layers[3],
+                                       stride=2,
+                                       skip_bn=skip_bn)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight,
@@ -53,7 +79,11 @@ class ResNetMultiImageInput(models.ResNet):
                 nn.init.constant_(m.bias, 0)
 
 
-def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1):
+def resnet_multiimage_input(num_layers,
+                            pretrained=False,
+                            num_input_images=1,
+                            sparse=False,
+                            skip_bn=False):
     """Constructs a ResNet model.
     Args:
         num_layers (int): Number of resnet layers. Must be 18 or 50
@@ -68,13 +98,15 @@ def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1):
     }[num_layers]
     model = ResNetMultiImageInput(block_type,
                                   blocks,
-                                  num_input_images=num_input_images)
+                                  num_input_images=num_input_images,
+                                  sparse=sparse,
+                                  skip_bn=skip_bn)
 
     if pretrained:
         loaded = model_zoo.load_url(
             models.resnet.model_urls['resnet{}'.format(num_layers)])
-        # loaded['conv1.weight'] = torch.cat(
-        #     [loaded['conv1.weight']] * num_input_images, 1) / num_input_images
+        loaded['conv1.weight'] = torch.cat(
+            [loaded['conv1.weight']] * num_input_images, 1) / num_input_images
         model.load_state_dict(loaded, strict=False)
     return model
 
@@ -83,7 +115,12 @@ class ResnetEncoder(nn.Module):
     """Pytorch module for a resnet encoder
     """
 
-    def __init__(self, num_layers, pretrained, num_input_images=1):
+    def __init__(self,
+                 num_layers,
+                 pretrained,
+                 num_input_images=1,
+                 sparse=False,
+                 skip_bn=False):
         super(ResnetEncoder, self).__init__()
 
         self.num_ch_enc = np.array([64, 64, 128, 256, 512])
@@ -95,38 +132,63 @@ class ResnetEncoder(nn.Module):
             101: models.resnet101,
             152: models.resnet152
         }
+        self.sparse = sparse
 
         if num_layers not in resnets:
             raise ValueError(
                 "{} is not a valid number of resnet layers".format(num_layers))
 
         self.num_input_images = num_input_images
-        if num_input_images > 1:
+        if num_input_images > 1 or sparse:
             self.encoder = resnet_multiimage_input(num_layers, pretrained,
-                                                   num_input_images)
+                                                   num_input_images, sparse,
+                                                   skip_bn)
         else:
             self.encoder = resnets[num_layers](pretrained)
 
         if num_layers > 34:
             self.num_ch_enc[1:] *= 4
+        self.skip_bn = skip_bn
 
     def forward(self, input_image):
         self.features = []
         x = (input_image - 0.45) / 0.225
-        if self.num_input_images == 1:
-            x = self.encoder.conv1(x)
-            x = self.encoder.bn1(x)
+        if self.sparse:
+            feat_i = self.encoder.bn_i(
+                self.encoder.conv_i(x[:, 3 * self.num_input_images:, :, :]))
+            # feat_i = self.encoder.bn_i(feat_i)
+            feat_s = self.encoder.bn_s(
+                self.encoder.conv_s(x[:, 3 * self.num_input_images:, :, :]))
+            # feat_s = self.encoder.bn_s(feat_s)
+            # x = torch.cat((feat_i, feat_s), 1)
+            self.features.append(torch.cat((feat_i, feat_s), 1))
         else:
-            feat_i = self.encoder.conv_i(x[:, :3, :, :])
-            feat_i = self.encoder.bn_i(feat_i)
-            feat_s = self.encoder.conv_s(x[:, 3:, :, :])
-            feat_s = self.encoder.bn_s(feat_s)
-            x = torch.cat((feat_i, feat_s), 1)
-        self.features.append(self.encoder.relu(x))
+            out = self.encoder.conv1(x)
+            if not self.skip_bn:
+                out = self.bn1(out)
+            self.features.append(self.encoder.relu(out))
+            # self.features.append(torch.ones([1, 64, 96, 320], device='cuda:0'))
+
+        # x = self.encoder.relu(x)
+        # self.features.append(x.clone())
+        # x = self.encoder.layer1(self.encoder.maxpool(x))
+        # self.features.append(x.clone())
+        # x = self.encoder.layer2(x)
+        # self.features.append(x.clone())
+        # x = self.encoder.layer3(x)
+        # self.features.append(x.clone())
+        # x = self.encoder.layer4(x)
+        # self.features.append(x.clone())
+
         self.features.append(
             self.encoder.layer1(self.encoder.maxpool(self.features[-1])))
         self.features.append(self.encoder.layer2(self.features[-1]))
         self.features.append(self.encoder.layer3(self.features[-1]))
         self.features.append(self.encoder.layer4(self.features[-1]))
+
+        # self.features.append(torch.ones([1, 64, 48, 160], device='cuda:0'))
+        # self.features.append(torch.ones([1, 128, 24, 80], device='cuda:0'))
+        # self.features.append(torch.ones([1, 256, 12, 40], device='cuda:0'))
+        # self.features.append(torch.ones([1,512,6,20],device='cuda:0'))
 
         return self.features

@@ -176,8 +176,8 @@ class MonoDataset(data.Dataset):
         for scale in range(self.num_scales):
             K = self.K.copy()
 
-            K[0, :] *= self.width // (2**scale)
-            K[1, :] *= self.height // (2**scale)
+            K[0, :] = K[0, :] * self.width // (2**scale)
+            K[1, :] = K[1, :] * self.height // (2**scale)
 
             inv_K = np.linalg.pinv(K)
 

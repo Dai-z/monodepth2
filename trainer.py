@@ -10,8 +10,10 @@ import numpy as np
 import time
 
 import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
 
@@ -27,6 +29,13 @@ from IPython import embed
 from tqdm import tqdm
 
 
+# Freeze bn https://discuss.pytorch.org/t/freeze-batchnorm-layer-lead-to-nan/8385
+def set_bn_eval(m):
+    classname = m.__class__.__name__
+    if classname.find('BatchNorm') != -1:
+        m.eval()
+
+
 class Trainer:
 
     def __init__(self, options):
@@ -40,7 +49,16 @@ class Trainer:
         self.models = {}
         self.parameters_to_train = []
 
-        self.device = torch.device("cpu" if self.opt.no_cuda else "cuda")
+        # Device settings
+        # distributed = torch.cuda.device_count() > 1
+        distributed = True
+        if distributed:
+            self.device = torch.device('cuda:{}'.format(self.opt.local_rank))
+            torch.cuda.set_device(self.opt.local_rank)
+            torch.distributed.init_process_group(backend='nccl',
+                                                 init_method="env://",)
+        else:
+            self.device = torch.device("cpu" if self.opt.no_cuda else "cuda")
 
         self.num_scales = len(self.opt.scales)
         self.num_input_frames = len(self.opt.frame_ids)
@@ -54,37 +72,74 @@ class Trainer:
         if self.opt.use_stereo:
             self.opt.frame_ids.append("s")
 
+        # Encoder
         self.models["encoder"] = networks.ResnetEncoder(
             self.opt.num_layers,
             self.opt.weights_init == "pretrained",
-            num_input_images=2)
+            sparse=True)
         self.models["encoder"].to(self.device)
+        if distributed:
+            # self.models["encoder"] = nn.SyncBatchNorm.convert_sync_batchnorm(
+            #     self.models["encoder"])
+            self.models["encoder"] = DDP(self.models["encoder"],
+                                         find_unused_parameters=True,
+                                         device_ids=[self.opt.local_rank],
+                                         output_device=self.opt.local_rank)
+            num_ch_enc = self.models["encoder"].module.num_ch_enc
+        else:
+            num_ch_enc = self.models["encoder"].num_ch_enc
         self.parameters_to_train += list(self.models["encoder"].parameters())
 
-        self.models["depth"] = networks.DepthDecoder(
-            self.models["encoder"].num_ch_enc, self.opt.scales)
+        # Depth decoder
+        self.models["depth"] = networks.DepthDecoder(num_ch_enc,
+                                                     self.opt.scales)
         self.models["depth"].to(self.device)
+        if distributed:
+            # self.models["depth"] = nn.SyncBatchNorm.convert_sync_batchnorm(
+            #     self.models["depth"])
+            self.models["depth"] = DDP(self.models["depth"],
+                                       find_unused_parameters=True,
+                                       device_ids=[self.opt.local_rank],
+                                       output_device=self.opt.local_rank)
+
         self.parameters_to_train += list(self.models["depth"].parameters())
 
+        # Pose net
         if self.use_pose_net:
             if self.opt.pose_model_type == "separate_resnet":
+                # Pose encoder
                 self.models["pose_encoder"] = networks.ResnetEncoder(
                     self.opt.num_layers,
                     self.opt.weights_init == "pretrained",
-                    num_input_images=self.num_pose_frames)
-
+                    num_input_images=self.num_pose_frames,
+                    skip_bn=True)
+                # self.models["pose_encoder"] = nn.SyncBatchNorm.convert_sync_batchnorm(
+                #     self.models["pose_encoder"])
                 self.models["pose_encoder"].to(self.device)
-                self.parameters_to_train += list(
-                    self.models["pose_encoder"].parameters())
+                if distributed:
+                    self.models["pose_encoder"] = DDP(
+                        self.models["pose_encoder"],
+                        find_unused_parameters=True,
+                        device_ids=[self.opt.local_rank],
+                        output_device=self.opt.local_rank)
+                    self.models["pose_encoder"].apply(set_bn_eval)
+                    num_ch_pose_enc = self.models[
+                        "pose_encoder"].module.num_ch_enc
+                else:
+                    num_ch_pose_enc = self.models["pose_encoder"].num_ch_enc
+
+                for p in self.models["pose_encoder"].parameters():
+                    if p.requires_grad:
+                        self.parameters_to_train.append(p)
 
                 self.models["pose"] = networks.PoseDecoder(
-                    self.models["pose_encoder"].num_ch_enc,
+                    num_ch_pose_enc,
                     num_input_features=1,
                     num_frames_to_predict_for=2)
 
             elif self.opt.pose_model_type == "shared":
                 self.models["pose"] = networks.PoseDecoder(
-                    self.models["encoder"].num_ch_enc, self.num_pose_frames)
+                    num_ch_enc, self.num_pose_frames)
 
             elif self.opt.pose_model_type == "posecnn":
                 self.models["pose"] = networks.PoseCNN(
@@ -92,7 +147,17 @@ class Trainer:
                     "all" else 2)
 
             self.models["pose"].to(self.device)
-            self.parameters_to_train += list(self.models["pose"].parameters())
+            if distributed:
+                # self.models["pose"] = nn.SyncBatchNorm.convert_sync_batchnorm(
+                #     self.models["pose"])
+                self.models["pose"] = DDP(self.models["pose"],
+                                          find_unused_parameters=True,
+                                          device_ids=[self.opt.local_rank],
+                                          output_device=self.opt.local_rank)
+            # self.parameters_to_train += list(self.models["pose"].parameters())
+            for p in self.models["pose"].parameters():
+                if p.requires_grad:
+                    self.parameters_to_train.append(p)
 
         if self.opt.predictive_mask:
             assert self.opt.disable_automasking, \
@@ -101,10 +166,16 @@ class Trainer:
             # Our implementation of the predictive masking baseline has the the same architecture
             # as our depth decoder. We predict a separate mask for each source frame.
             self.models["predictive_mask"] = networks.DepthDecoder(
-                self.models["encoder"].num_ch_enc,
+                num_ch_enc,
                 self.opt.scales,
                 num_output_channels=(len(self.opt.frame_ids) - 1))
             self.models["predictive_mask"].to(self.device)
+            if distributed:
+                self.models["predictive_mask"] = DDP(
+                    self.models["predictive_mask"],
+                    find_unused_parameters=True,
+                    device_ids=[self.opt.local_rank],
+                    output_device=self.opt.local_rank)
             self.parameters_to_train += list(
                 self.models["predictive_mask"].parameters())
 
@@ -116,10 +187,11 @@ class Trainer:
         if self.opt.load_weights_folder is not None:
             self.load_model()
 
-        print("Training model named:\n  ", self.opt.model_name)
-        print("Models and tensorboard events files are saved to:\n  ",
-              self.opt.log_dir)
-        print("Training is using:\n  ", self.device)
+        if self.opt.local_rank == 0:
+            print("Training model named:\n  ", self.opt.model_name)
+            print("Models and tensorboard events files are saved to:\n  ",
+                  self.opt.log_dir)
+            print("Training is using:\n  ", self.device)
 
         # data
         datasets_dict = {
@@ -131,6 +203,7 @@ class Trainer:
         fpath = os.path.join(os.path.dirname(__file__), "splits",
                              self.opt.split, "{}_files.txt")
 
+        # FIXME: Using test split for loading faster when debugging parallel training
         train_filenames = readlines(fpath.format("train"))
         val_filenames = readlines(fpath.format("val"))
         img_ext = '.png' if self.opt.png else '.jpg'
@@ -138,6 +211,7 @@ class Trainer:
         num_train_samples = len(train_filenames)
         self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs
 
+        # Prepare datasets
         train_dataset = self.dataset(self.opt.data_path,
                                      train_filenames,
                                      self.opt.height,
@@ -146,12 +220,18 @@ class Trainer:
                                      4,
                                      is_train=True,
                                      img_ext=img_ext)
+        if distributed:
+            self.train_sampler = DistributedSampler(train_dataset)
+        else:
+            self.train_sampler = None
+        self.opt.num_workers = self.opt.num_workers // torch.cuda.device_count()
         self.train_loader = DataLoader(train_dataset,
                                        self.opt.batch_size,
-                                       True,
+                                       shuffle=(self.train_sampler is None),
                                        num_workers=self.opt.num_workers,
                                        pin_memory=True,
-                                       drop_last=True)
+                                       drop_last=True,
+                                       sampler=self.train_sampler)
         val_dataset = self.dataset(self.opt.data_path,
                                    val_filenames,
                                    self.opt.height,
@@ -160,12 +240,18 @@ class Trainer:
                                    4,
                                    is_train=False,
                                    img_ext=img_ext)
-        self.val_loader = DataLoader(val_dataset,
-                                     self.opt.batch_size,
-                                     True,
-                                     num_workers=self.opt.num_workers,
-                                     pin_memory=True,
-                                     drop_last=True)
+        if distributed:
+            self.val_sampler = DistributedSampler(train_dataset)
+        else:
+            self.val_sampler = None
+        self.val_loader = DataLoader(
+            val_dataset,
+            self.opt.batch_size,
+            shuffle=False,
+            #  num_workers=self.opt.num_workers,
+            pin_memory=True,
+            drop_last=True,
+            sampler=self.val_sampler)
         self.val_iter = iter(self.val_loader)
 
         self.writers = {}
@@ -195,10 +281,10 @@ class Trainer:
             "da/a3"
         ]
 
-        print("Using split:\n  ", self.opt.split)
-        print(
-            "There are {:d} training items and {:d} validation items\n".format(
-                len(train_dataset), len(val_dataset)))
+        if self.opt.local_rank == 0:
+            print("Using split:\n  ", self.opt.split)
+            print("There are {:d} training items and {:d} validation items\n".
+                  format(len(train_dataset), len(val_dataset)))
 
         self.save_opts()
 
@@ -220,20 +306,27 @@ class Trainer:
         self.epoch = 0
         self.step = 0
         self.start_time = time.time()
-        for self.epoch in range(self.opt.num_epochs):
-            self.run_epoch()
-            if (self.epoch + 1) % self.opt.save_frequency == 0:
-                self.save_model()
+        # FIXME: Close anomaly detection after debugging
+        with torch.autograd.set_detect_anomaly(True):
+            for self.epoch in range(self.opt.num_epochs):
+                if not self.train_sampler is None:
+                    self.train_sampler.set_epoch(self.epoch)
+                self.run_epoch()
+                if (
+                        self.epoch + 1
+                ) % self.opt.save_frequency == 0 and self.opt.local_rank == 0:
+                    self.save_model()
 
     def run_epoch(self):
         """Run a single epoch of training and validation
         """
-        self.model_lr_scheduler.step()
 
-        print("Training")
+        if self.opt.local_rank == 0:
+            print("Training")
         self.set_train()
 
-        t = tqdm(total=len(self.train_loader))
+        if self.opt.local_rank == 0:
+            t = tqdm(total=len(self.train_loader))
         for batch_idx, inputs in enumerate(self.train_loader):
 
             before_op_time = time.time()
@@ -250,17 +343,21 @@ class Trainer:
             early_phase = batch_idx % self.opt.log_frequency == 0 and self.step < 2000
             late_phase = self.step % 2000 == 0
 
-            if early_phase or late_phase:
-                self.log_time(batch_idx, duration, losses["loss"].cpu().data)
+            if self.opt.local_rank == 0:
+                if (early_phase or late_phase):
+                    self.log_time(batch_idx, duration,
+                                  losses["loss"].cpu().data)
 
-                if "depth_gt" in inputs:
-                    self.compute_depth_losses(inputs, outputs, losses)
+                    if "depth_gt" in inputs:
+                        self.compute_depth_losses(inputs, outputs, losses)
 
-                self.log("train", inputs, outputs, losses)
-                self.val()
+                    self.log("train", inputs, outputs, losses)
+                    # FIXME: Error in val.
+                    # self.val()
+                t.update()
 
             self.step += 1
-            t.update()
+        self.model_lr_scheduler.step()
 
     def process_batch(self, inputs):
         """Pass a minibatch through the network and generate images and losses
@@ -294,10 +391,19 @@ class Trainer:
                 features)
 
         if self.use_pose_net:
+            # pose_output = self.predict_poses(inputs, features)
+            # for k, v in pose_output.items():
+            #     outputs[k] = v
             outputs.update(self.predict_poses(inputs, features))
 
         self.generate_images_pred(inputs, outputs)
         losses = self.compute_losses(inputs, outputs)
+        """
+        Distribute the loss on multi-gpu to reduce 
+        the memory cost in the main gpu.
+        You can check the following discussion.
+        https://discuss.pytorch.org/t/dataparallel-imbalanced-memory-usage/22551/21
+        """
 
         return outputs, losses
 
@@ -306,7 +412,7 @@ class Trainer:
         """
         outputs = {}
         if self.num_pose_frames == 2:
-            # In this setting, we compute the pose to each source frame via a
+            # in this setting, we compute the pose to each source frame via a
             # separate forward pass through the pose network.
 
             # select what features the pose network takes as input
@@ -320,17 +426,16 @@ class Trainer:
 
             for f_i in self.opt.frame_ids[1:]:
                 if f_i != "s":
-                    # To maintain ordering we always pass frames in temporal order
+                    # to maintain ordering we always pass frames in temporal order
                     if f_i < 0:
                         pose_inputs = [pose_feats[f_i], pose_feats[0]]
                     else:
                         pose_inputs = [pose_feats[0], pose_feats[f_i]]
 
                     if self.opt.pose_model_type == "separate_resnet":
-                        pose_inputs = [
-                            self.models["pose_encoder"](torch.cat(
-                                pose_inputs, 1))
-                        ]
+                        tmp_inputs = torch.cat(pose_inputs, 1)
+                        tmp_inputs = self.models["pose_encoder"](tmp_inputs)
+                        pose_inputs = [tmp_inputs]
                     elif self.opt.pose_model_type == "posecnn":
                         pose_inputs = torch.cat(pose_inputs, 1)
 
@@ -338,14 +443,14 @@ class Trainer:
                     outputs[("axisangle", 0, f_i)] = axisangle
                     outputs[("translation", 0, f_i)] = translation
 
-                    # Invert the matrix if the frame id is negative
-                    outputs[("cam_T_cam", 0,
+                    # invert the matrix if the frame id is negative
+                    outputs[("cam_t_cam", 0,
                              f_i)] = transformation_from_parameters(
                                  axisangle[:, 0],
                                  translation[:, 0],
                                  invert=(f_i < 0))
         else:
-            # Here we input all frames to the pose net (and predict all poses) together
+            # here we input all frames to the pose net (and predict all poses) together
             if self.opt.pose_model_type in ["separate_resnet", "posecnn"]:
                 pose_inputs = torch.cat([
                     inputs[("color_aug", i, 0)]
@@ -367,14 +472,14 @@ class Trainer:
                 if f_i != "s":
                     outputs[("axisangle", 0, f_i)] = axisangle
                     outputs[("translation", 0, f_i)] = translation
-                    outputs[("cam_T_cam", 0,
+                    outputs[("cam_t_cam", 0,
                              f_i)] = transformation_from_parameters(
                                  axisangle[:, i], translation[:, i])
 
         return outputs
 
     def val(self):
-        """Validate the model on a single minibatch
+        """validate the model on a single minibatch
         """
         self.set_eval()
         try:
@@ -395,8 +500,8 @@ class Trainer:
         self.set_train()
 
     def generate_images_pred(self, inputs, outputs):
-        """Generate the warped (reprojected) color images for a minibatch.
-        Generated images are saved into the `outputs` dictionary.
+        """generate the warped (reprojected) color images for a minibatch.
+        generated images are saved into the `outputs` dictionary.
         """
         for scale in self.opt.scales:
             disp = outputs[("disp", scale)]
@@ -416,9 +521,9 @@ class Trainer:
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):
 
                 if frame_id == "s":
-                    T = inputs["stereo_T"]
+                    t = inputs["stereo_t"]
                 else:
-                    T = outputs[("cam_T_cam", 0, frame_id)]
+                    T = outputs[("cam_t_cam", 0, frame_id)]
 
                 # from the authors of https://arxiv.org/abs/1712.00175
                 if self.opt.pose_model_type == "posecnn":
@@ -427,9 +532,9 @@ class Trainer:
                     translation = outputs[("translation", 0, frame_id)]
 
                     inv_depth = 1 / depth
-                    mean_inv_depth = inv_depth.mean(3, True).mean(2, True)
+                    mean_inv_depth = inv_depth.mean(3, true).mean(2, true)
 
-                    T = transformation_from_parameters(
+                    t = transformation_from_parameters(
                         axisangle[:, 0],
                         translation[:, 0] * mean_inv_depth[:, 0], frame_id < 0)
 
@@ -443,7 +548,8 @@ class Trainer:
                 outputs[("color", frame_id, scale)] = F.grid_sample(
                     inputs[("color", frame_id, source_scale)],
                     outputs[("sample", frame_id, scale)],
-                    padding_mode="border")
+                    padding_mode="border",
+                    align_corners=True)
 
                 if not self.opt.disable_automasking:
                     outputs[("color_identity", frame_id, scale)] = \
@@ -506,7 +612,8 @@ class Trainer:
                     self.compute_sparse_loss(pred, lidar, lidar_mask))
                 # FIXME: Add mask
                 reprojection_losses.append(
-                    self.compute_reprojection_loss(pred, target))#, (lidar <= 0)))
+                    self.compute_reprojection_loss(pred,
+                                                   target))  #, (lidar <= 0)))
 
             reprojection_losses = torch.cat(reprojection_losses, 1)
             sparse_losses = torch.cat(sparse_losses, 1)
@@ -537,12 +644,12 @@ class Trainer:
                                          mode="bilinear",
                                          align_corners=False)
 
-                reprojection_losses *= mask
+                reprojection_losses = mask * reprojection_losses
 
                 # add a loss pushing mask to 1 (using nn.BCELoss for stability)
                 weighting_loss = 0.2 * nn.BCELoss()(mask, torch.ones(
                     mask.shape).cuda())
-                loss += weighting_loss.mean()
+                loss = loss + weighting_loss.mean()
 
             if self.opt.avg_reprojection:
                 reprojection_loss = reprojection_losses.mean(1, keepdim=True)
@@ -551,12 +658,14 @@ class Trainer:
 
             if not self.opt.disable_automasking:
                 # add random numbers to break ties
-                identity_reprojection_loss += torch.randn(
+                identity_reprojection_loss = identity_reprojection_loss + torch.randn(
                     identity_reprojection_loss.shape).cuda() * 0.00001
 
-                combined = torch.cat((identity_reprojection_loss,
-                                      reprojection_loss, sparse_losses),
-                                     dim=1)
+                # FIXME: Add sparse loss
+                combined = torch.cat(
+                    (identity_reprojection_loss,
+                     reprojection_loss, sparse_losses),
+                    dim=1)
             else:
                 combined = reprojection_loss
 
@@ -569,17 +678,20 @@ class Trainer:
                 outputs["identity_selection/{}".format(scale)] = (
                     idxs > identity_reprojection_loss.shape[1] - 1).float()
 
-            loss += to_optimise.mean()
+            # reprojection & saprse loss
+            loss = loss + to_optimise.mean()
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
 
-            loss += self.opt.disparity_smoothness * smooth_loss / (2**scale)
-            total_loss += loss
+            # smooth loss
+            loss = loss + self.opt.disparity_smoothness * smooth_loss / (2**
+                                                                         scale)
+            total_loss = total_loss + loss
             losses["loss/{}".format(scale)] = loss
 
-        total_loss /= self.num_scales
+        total_loss = total_loss / self.num_scales
         losses["loss"] = total_loss
         return losses
 
@@ -606,7 +718,8 @@ class Trainer:
 
         depth_gt = depth_gt[mask]
         depth_pred = depth_pred[mask]
-        depth_pred *= torch.median(depth_gt) / torch.median(depth_pred)
+        depth_pred = depth_pred * torch.median(depth_gt) / torch.median(
+            depth_pred)
 
         depth_pred = torch.clamp(depth_pred, min=1e-3, max=80)
 
@@ -632,8 +745,6 @@ class Trainer:
     def log(self, mode, inputs, outputs, losses):
         """Write an event to the tensorboard events file
         """
-        # FIXME: hide all tensorboard logs
-        return
         writer = self.writers[mode]
         for l, v in losses.items():
             writer.add_scalar("{}".format(l), v, self.step)
