@@ -1,19 +1,21 @@
 from __future__ import absolute_import, division, print_function
 
 import os
-import cv2
+from cv2 import cv2
 import numpy as np
 
 import torch
 from torch.utils.data import DataLoader
 
 from layers import disp_to_depth
-from utils import readlines
+from utils import readlines, printc
 from options import MonodepthOptions
 import datasets
 import networks
+
 from tqdm import tqdm
-import matplotlib.pyplot as plt
+import PIL.Image as pil
+import time
 
 cv2.setNumThreads(
     0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
@@ -96,9 +98,18 @@ def evaluate(opt):
         depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
 
         model_dict = encoder.state_dict()
-        encoder.load_state_dict(
-            {k: v for k, v in encoder_dict.items() if k in model_dict})
-        depth_decoder.load_state_dict(torch.load(decoder_path))
+
+        encoder.load_state_dict({
+            k.replace('module.', ''): v
+            for k, v in encoder_dict.items()
+            if k.replace('module.', '') in model_dict
+        })
+
+        decoder_dict = torch.load(decoder_path)
+        corrected_dict = {
+            k.replace('module.', ''): v for k, v in decoder_dict.items()
+        }
+        depth_decoder.load_state_dict(corrected_dict)
 
         encoder.cuda()
         encoder.eval()
@@ -179,7 +190,10 @@ def evaluate(opt):
         # quit()
 
     gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
-    gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1')["data"]
+    gt_depths = np.load(gt_path,
+                        fix_imports=True,
+                        encoding='latin1',
+                        allow_pickle=True)["data"]
 
     print("   Mono evaluation - using median scaling")
 
@@ -198,7 +212,8 @@ def evaluate(opt):
                                      "{:010d}.png".format(frame_id))
         velodyne_depth = np.array(pil.open(velodyne_path)).astype(
             np.float32) / 256
-        velodyne_mask = velodyne_depth > 0
+        velodyne_mask = velodyne_depth > 1e-7
+        mask_idx = velodyne_mask.nonzero()
 
         gt_depth = gt_depths[i]
         gt_height, gt_width = gt_depth.shape[:2]
@@ -215,10 +230,39 @@ def evaluate(opt):
             # ratio = np.mean(gt_depth) / np.mean(pred_depth)
 
             ratio = np.mean(velodyne_depth[velodyne_mask] /
-                             pred_depth[velodyne_mask])
-            ratio_image = velodyne_depth[velodyne_mask] / pred_depth[velodyne_mask]
+                            pred_depth[velodyne_mask])
+            # ratio = 1
+            ratio_image = velodyne_depth[velodyne_mask] / pred_depth[
+                velodyne_mask]
+            ratio = ratio_image.mean()
             # print('ratio std {}: {}'.format(ratio_image.mean(), np.std(ratio_image)))
             stds.append(np.std(ratio_image))
+
+            # vis_var = np.zeros(pred_depth.shape)
+            # var_image = np.log(abs(ratio_image - ratio))
+            # vis_var[mask_idx] = var_image
+            # max_var = vis_var.max()
+            # # Create color bar
+            # colorbar = np.uint8(
+            #     np.repeat(np.linspace(255, 0,
+            #                           num=pred_depth.shape[0])[:, np.newaxis],
+            #               100,
+            #               axis=1)[:, :, np.newaxis])
+            # colorbar = cv2.applyColorMap(colorbar, cv2.COLORMAP_JET)
+            # colorbar = cv2.putText(colorbar, '{:.2E}'.format(vis_var.max()),
+            #                        (0, 10), cv2.FONT_HERSHEY_COMPLEX, .5,
+            #                        (204, 255, 102), 1)
+            # # visualize variance
+            # vis_var /= max_var
+            # vis_var = np.uint8(vis_var * 255)
+            # vis_var = cv2.applyColorMap(vis_var, cv2.COLORMAP_JET)
+            # vis_var[:,:,0] *= velodyne_mask
+            # vis_var[:,:,1] *= velodyne_mask
+            # vis_var[:,:,2] *= velodyne_mask
+            # vis_var = np.concatenate((vis_var, colorbar), axis=1)
+            # cv2.imwrite('log_var.jpg', vis_var)
+            # time.sleep(.1)
+            # exit()
 
             ratios.append(ratio)
             pred_depth *= ratio
