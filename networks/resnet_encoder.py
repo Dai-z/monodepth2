@@ -53,22 +53,19 @@ class ResNetMultiImageInput(models.ResNet):
             self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=False)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0], skip_bn=skip_bn)
+        self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block,
                                        128,
                                        layers[1],
-                                       stride=2,
-                                       skip_bn=skip_bn)
+                                       stride=2)
         self.layer3 = self._make_layer(block,
                                        256,
                                        layers[2],
-                                       stride=2,
-                                       skip_bn=skip_bn)
+                                       stride=2)
         self.layer4 = self._make_layer(block,
                                        512,
                                        layers[3],
-                                       stride=2,
-                                       skip_bn=skip_bn)
+                                       stride=2)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight,
@@ -164,8 +161,8 @@ class ResnetEncoder(nn.Module):
             self.features.append(torch.cat((feat_i, feat_s), 1))
         else:
             out = self.encoder.conv1(x)
-            if not self.skip_bn:
-                out = self.encoder.bn1(out)
+            # if not self.skip_bn:
+            out = self.encoder.bn1(out)
             self.features.append(self.encoder.relu(out))
         self.features.append(
             self.encoder.layer1(self.encoder.maxpool(self.features[-1])))

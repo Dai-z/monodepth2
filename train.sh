@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # GPUS='0,1,2,3,4,5,6,7'
-GPUS='0'
+GPUS='0,1'
 
 NUM_GPUS=$(echo $GPUS | tr "," "\n" | wc -l)
 NUM_THREADS=$(cat /proc/cpuinfo | grep processor | wc -l)
