@@ -50,8 +50,8 @@ class Trainer:
         self.parameters_to_train = []
 
         # Device settings
-        distributed = torch.cuda.device_count() > 1
-        if distributed:
+        self.distributed = torch.cuda.device_count() > 1
+        if self.distributed:
             self.device = torch.device('cuda:{}'.format(self.opt.local_rank))
             torch.cuda.set_device(self.opt.local_rank)
             torch.distributed.init_process_group(
@@ -112,7 +112,7 @@ class Trainer:
                                      4,
                                      is_train=True,
                                      img_ext=img_ext)
-        if distributed:
+        if self.distributed:
             self.train_sampler = DistributedSampler(train_dataset)
         else:
             self.train_sampler = None
@@ -132,7 +132,7 @@ class Trainer:
                                    4,
                                    is_train=False,
                                    img_ext=img_ext)
-        if distributed:
+        if self.distributed:
             self.val_sampler = DistributedSampler(train_dataset)
         else:
             self.val_sampler = None
@@ -186,9 +186,8 @@ class Trainer:
             if not self.train_sampler is None:
                 self.train_sampler.set_epoch(self.epoch)
             self.run_epoch()
-            if (
-                    self.epoch + 1
-            ) % self.opt.save_frequency == 0 and self.opt.local_rank == 0:
+            if (self.epoch + 1
+               ) % self.opt.save_frequency == 0 and self.opt.local_rank == 0:
                 self.save_model()
 
     def run_epoch(self):
@@ -244,7 +243,7 @@ class Trainer:
             inputs = self.val_iter.next()
 
         with torch.no_grad():
-            outputs, losses = self.model(intpus)
+            outputs, losses = self.model(inputs)
 
             if "depth_gt" in inputs:
                 self.compute_depth_losses(inputs, outputs, losses)
@@ -352,22 +351,15 @@ class Trainer:
             json.dump(to_save, f, indent=2)
 
     def save_model(self):
-        """Save model weights to disk
-        """
         save_folder = os.path.join(self.log_path, "models",
                                    "weights_{}".format(self.epoch))
         if not os.path.exists(save_folder):
             os.makedirs(save_folder)
 
-        for model_name, model in self.models.items():
-            save_path = os.path.join(save_folder, "{}.pth".format(model_name))
-            to_save = model.state_dict()
-            if model_name == 'encoder':
-                # save the sizes - these are needed at prediction time
-                to_save['height'] = self.opt.height
-                to_save['width'] = self.opt.width
-                to_save['use_stereo'] = self.opt.use_stereo
-            torch.save(to_save, save_path)
+        if self.distributed:
+            self.model.module.save_model(save_folder)
+        else:
+            self.model.save_model(save_folder)
 
         save_path = os.path.join(save_folder, "{}.pth".format("adam"))
         torch.save(self.model_optimizer.state_dict(), save_path)
@@ -378,22 +370,15 @@ class Trainer:
         self.opt.load_weights_folder = os.path.expanduser(
             self.opt.load_weights_folder)
 
+        if self.distributed:
+            self.model.module.load_model()
+        else:
+            self.model.load_model()
+
         assert os.path.isdir(self.opt.load_weights_folder), \
             "Cannot find folder {}".format(self.opt.load_weights_folder)
         print("loading model from folder {}".format(
             self.opt.load_weights_folder))
-
-        for n in self.opt.models_to_load:
-            print("Loading {} weights...".format(n))
-            path = os.path.join(self.opt.load_weights_folder,
-                                "{}.pth".format(n))
-            model_dict = self.models[n].state_dict()
-            pretrained_dict = torch.load(path)
-            pretrained_dict = {
-                k: v for k, v in pretrained_dict.items() if k in model_dict
-            }
-            model_dict.update(pretrained_dict)
-            self.models[n].load_state_dict(model_dict)
 
         # loading adam state
         optimizer_load_path = os.path.join(self.opt.load_weights_folder,
@@ -413,8 +398,8 @@ class FullModel(nn.Module):
         self.opt = opt
 
         self.device = device
-        self.num_pose_frames = 2 if self.opt.pose_model_input == "pairs" else self.num_input_frames
         self.num_input_frames = len(self.opt.frame_ids)
+        self.num_pose_frames = 2 if self.opt.pose_model_input == "pairs" else self.num_input_frames
         self.num_scales = len(self.opt.scales)
 
         self.use_pose_net = not (self.opt.use_stereo and
@@ -422,6 +407,7 @@ class FullModel(nn.Module):
         if self.opt.use_stereo:
             self.opt.frame_ids.append("s")
 
+        self.module_names = ['encoder', 'decoder']
         # Define modules
         # Encoder
         self.encoder = networks.ResnetEncoder(
@@ -445,6 +431,7 @@ class FullModel(nn.Module):
                     num_input_images=self.num_pose_frames)
                 self.pose_encoder.to(self.device)
                 num_ch_pose_enc = self.pose_encoder.num_ch_enc
+                self.module_names.append('pose_encoder')
                 # pose decoder
                 self.pose = networks.PoseDecoder(num_ch_pose_enc,
                                                  num_input_features=1,
@@ -456,6 +443,7 @@ class FullModel(nn.Module):
                 self.pose = networks.PoseCNN(self.num_input_frames if self.opt.
                                              pose_model_input == "all" else 2)
             self.pose.to(self.device)
+            self.module_names.append('pose')
 
         if self.opt.predictive_mask:
             assert self.opt.disable_automasking, \
@@ -468,6 +456,7 @@ class FullModel(nn.Module):
                 self.opt.scales,
                 num_output_channels=(len(self.opt.frame_ids) - 1))
             self.predictive_mask.to(self.device)
+            self.module_names.append('predictive_mask')
 
         # define functions
         if not self.opt.no_ssim:
@@ -759,7 +748,7 @@ class FullModel(nn.Module):
             #                          self.opt.max_depth)
             # Directly predict depth result
             depth = disp
-
+            outputs[("disp", 0, scale)] = 1 / (depth + 1e-7)
             outputs[("depth", 0, scale)] = depth
 
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):
@@ -798,3 +787,34 @@ class FullModel(nn.Module):
                 if not self.opt.disable_automasking:
                     outputs[("color_identity", frame_id, scale)] = \
                         inputs[("color", frame_id, source_scale)]
+
+    def save_model(self, save_folder):
+        """Save model weights to disk
+        """
+
+        for model_name, model in self.models.items():
+            save_path = os.path.join(save_folder, "{}.pth".format(model_name))
+            to_save = model.state_dict()
+            if model_name == 'encoder':
+                # save the sizes - these are needed at prediction time
+                to_save['height'] = self.opt.height
+                to_save['width'] = self.opt.width
+                to_save['use_stereo'] = self.opt.use_stereo
+            torch.save(to_save, save_path)
+
+    def load_model(self):
+        """Load model(s) from disk
+        """
+
+        for name in self.opt.models_to_load:
+            print("Loading {} weights...".format(name))
+            path = os.path.join(self.opt.load_weights_folder,
+                                "{}.pth".format(name))
+            m = getattr(self, name)
+            model_dict = m.state_dict()
+            pretrained_dict = torch.load(path)
+            pretrained_dict = {
+                k: v for k, v in pretrained_dict.items() if k in model_dict
+            }
+            model_dict.update(pretrained_dict)
+            m.load_state_dict(model_dict)
