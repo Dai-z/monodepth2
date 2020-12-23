@@ -1,6 +1,7 @@
 #!/bin/bash
 
-GPUS='0,1,2,3,4,5,6,7'
+# GPUS='0,1,2,3,4,5,6,7'
+GPUS='0'
 
 NUM_GPUS=$(echo $GPUS | tr "," "\n" | wc -l)
 NUM_THREADS=$(cat /proc/cpuinfo | grep processor | wc -l)
@@ -29,4 +30,5 @@ python -m torch.distributed.launch \
  --gpus $GPUS \
  --png
 #  --model_name test_parallel
-#  --load_weights_folder /root/tmp/mdp/models/weights_2
+#  --load_weights_folder models/mono_1024x320 \
+

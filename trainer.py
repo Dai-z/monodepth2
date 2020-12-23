@@ -517,8 +517,10 @@ class Trainer:
                                      align_corners=False)
                 source_scale = 0
 
-            _, depth = disp_to_depth(disp, self.opt.min_depth,
-                                     self.opt.max_depth)
+            # _, depth = disp_to_depth(disp, self.opt.min_depth,
+            #                          self.opt.max_depth)
+            # Directly predict depth result
+            depth = disp
 
             outputs[("depth", 0, scale)] = depth
 
@@ -665,7 +667,6 @@ class Trainer:
                 identity_reprojection_loss = identity_reprojection_loss + torch.randn(
                     identity_reprojection_loss.shape).cuda() * 0.00001
 
-                # FIXME: Add sparse loss
                 combined = torch.cat((identity_reprojection_loss,
                                       reprojection_loss, sparse_losses),
                                      dim=1)
