@@ -94,7 +94,7 @@ def evaluate(opt):
                                 pin_memory=True,
                                 drop_last=False)
 
-        encoder = networks.ResnetEncoder(opt.num_layers, False)
+        encoder = networks.ResnetEncoder(opt.num_layers, False, sparse=True)
         depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
 
         model_dict = encoder.state_dict()
@@ -125,19 +125,17 @@ def evaluate(opt):
         with torch.no_grad():
             for data in dataloader:
                 input_color = data[("color", 0, 0)].cuda()
+                input_lidar = data[("lidar", 0, 0)].cuda()
 
                 if opt.post_process:
                     # Post-processed results require each image to have two forward passes
                     input_color = torch.cat(
                         (input_color, torch.flip(input_color, [3])), 0)
+                input_data = torch.cat((input_color,input_lidar), 1)
 
-                output = depth_decoder(encoder(input_color))
+                output = depth_decoder(encoder(input_data))
 
-                # FIXME: using depth as disp
-                # pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth,
-                #                              opt.max_depth)
                 pred_disp = output[("disp", 0)].cpu()[:, 0].numpy()
-                # pred_disp = pred_disp.cpu()[:, 0].numpy()
 
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
@@ -212,7 +210,8 @@ def evaluate(opt):
         velodyne_path = os.path.join(opt.data_path, folder, "proj_depth",
                                      "velodyne_raw", "image_0" + side_map[side],
                                      "{:010d}.png".format(frame_id))
-        velodyne_depth = np.array(pil.open(velodyne_path)).astype(
+
+        velodyne_depth = cv2.imread(velodyne_path, cv2.IMREAD_ANYDEPTH).astype(
             np.float32) / 256
         velodyne_mask = velodyne_depth > 1e-7
         mask_idx = velodyne_mask.nonzero()

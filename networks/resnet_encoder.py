@@ -24,8 +24,7 @@ class ResNetMultiImageInput(models.ResNet):
                  layers,
                  num_classes=1000,
                  num_input_images=1,
-                 sparse=False,
-                 skip_bn=False):
+                 sparse=False):
         super(ResNetMultiImageInput, self).__init__(block, layers)
         self.inplanes = 64
         if sparse:
@@ -54,18 +53,9 @@ class ResNetMultiImageInput(models.ResNet):
         self.relu = nn.ReLU(inplace=False)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block,
-                                       128,
-                                       layers[1],
-                                       stride=2)
-        self.layer3 = self._make_layer(block,
-                                       256,
-                                       layers[2],
-                                       stride=2)
-        self.layer4 = self._make_layer(block,
-                                       512,
-                                       layers[3],
-                                       stride=2)
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight,
@@ -79,8 +69,7 @@ class ResNetMultiImageInput(models.ResNet):
 def resnet_multiimage_input(num_layers,
                             pretrained=False,
                             num_input_images=1,
-                            sparse=False,
-                            skip_bn=False):
+                            sparse=False):
     """Constructs a ResNet model.
     Args:
         num_layers (int): Number of resnet layers. Must be 18 or 50
@@ -96,8 +85,7 @@ def resnet_multiimage_input(num_layers,
     model = ResNetMultiImageInput(block_type,
                                   blocks,
                                   num_input_images=num_input_images,
-                                  sparse=sparse,
-                                  skip_bn=skip_bn)
+                                  sparse=sparse)
 
     if pretrained:
         loaded = model_zoo.load_url(
@@ -112,12 +100,13 @@ class ResnetEncoder(nn.Module):
     """Pytorch module for a resnet encoder
     """
 
-    def __init__(self,
-                 num_layers,
-                 pretrained,
-                 num_input_images=1,
-                 sparse=False,
-                 skip_bn=False):
+    def __init__(
+        self,
+        num_layers,
+        pretrained,
+        num_input_images=1,
+        sparse=False,
+    ):
         super(ResnetEncoder, self).__init__()
 
         self.num_ch_enc = np.array([64, 64, 128, 256, 512])
@@ -138,14 +127,12 @@ class ResnetEncoder(nn.Module):
         self.num_input_images = num_input_images
         if num_input_images > 1 or sparse:
             self.encoder = resnet_multiimage_input(num_layers, pretrained,
-                                                   num_input_images, sparse,
-                                                   skip_bn)
+                                                   num_input_images, sparse)
         else:
             self.encoder = resnets[num_layers](pretrained)
 
         if num_layers > 34:
             self.num_ch_enc[1:] *= 4
-        self.skip_bn = skip_bn
 
     def forward(self, input_image):
         self.features = []
@@ -161,7 +148,6 @@ class ResnetEncoder(nn.Module):
             self.features.append(torch.cat((feat_i, feat_s), 1))
         else:
             out = self.encoder.conv1(x)
-            # if not self.skip_bn:
             out = self.encoder.bn1(out)
             self.features.append(self.encoder.relu(out))
         self.features.append(

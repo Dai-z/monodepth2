@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TEST=false
+TEST=true
 if [ $TEST = true ] ; then
     GPUS='7'
     ARGS="--model_name test_parallel --num_workers 1 --load_weights_folder ~/tmp/mdp/models/weights_19"

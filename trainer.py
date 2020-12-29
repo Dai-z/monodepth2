@@ -73,15 +73,6 @@ class Trainer:
                              output_device=self.opt.local_rank,
                              find_unused_parameters=True)
 
-        if self.opt.load_weights_folder is not None:
-            self.load_model()
-
-        if self.opt.local_rank == 0:
-            print("Training model named:\n  ", self.opt.model_name)
-            print("Models and tensorboard events files are saved to:\n  ",
-                  self.opt.log_dir)
-            print("Training is using:\n  ", self.device)
-
         # data
         datasets_dict = {
             "kitti": datasets.KITTIRAWDataset,
@@ -145,21 +136,29 @@ class Trainer:
 
         self.get_opt_lr(0)
 
+        if self.opt.load_weights_folder is not None:
+            self.load_model()
+
+        if self.opt.local_rank == 0:
+            print("Training model named:\n  ", self.opt.model_name)
+            print("Models and tensorboard events files are saved to:\n  ",
+                  self.opt.log_dir)
+            print("Training is using:\n  ", self.device)
+
         self.writers = {}
         for mode in ["train", "val"]:
             self.writers[mode] = SummaryWriter(os.path.join(
                 self.log_path, mode))
 
         self.depth_metric_names = [
-            "de/abs_rel", "de/sq_rel", "de/rmse", "de/log_rmse", "da/a1", "da/a2",
-            "da/a3"
+            "de/abs_rel", "de/sq_rel", "de/rmse", "de/log_rmse", "da/a1",
+            "da/a2", "da/a3"
         ]
 
         if self.opt.local_rank == 0:
             print("Using split:\n  ", self.opt.split)
             print("There are {:d} training items and {:d} validation items\n".
                   format(len(train_dataset), len(val_dataset)))
-
 
         self.save_opts()
 
@@ -199,6 +198,8 @@ class Trainer:
         self.epoch = 0
         self.step = 0
         self.start_time = time.time()
+        if self.opt.local_rank == 0:
+            print("Training")
 
         for self.epoch in range(self.opt.num_epochs):
             if self.epoch == self.opt.warmup_epochs:
@@ -214,8 +215,6 @@ class Trainer:
         """Run a single epoch of training and validation
         """
 
-        if self.opt.local_rank == 0:
-            print("Training")
         self.set_train()
 
         if self.opt.local_rank == 0:
@@ -636,19 +635,17 @@ class FullModel(nn.Module):
             color = inputs[("color", 0, scale)]
             target = inputs[("color", 0, source_scale)]
 
-            for frame_id in self.opt.frame_ids[1:]:
-                pred = outputs[("color", frame_id, scale)]
-
-                # FIXME: Add mask
-                reprojection_losses.append(
-                    self.compute_reprojection_loss(pred,
-                                                   target))  #, (lidar <= 0)))
             # sparse loss
             lidar = inputs[('lidar', 0, 0)]
             lidar_mask = lidar > 0
             sparse_loss = self.compute_sparse_loss(pred_depth, lidar,
                                                    lidar_mask)
 
+            for frame_id in self.opt.frame_ids[1:]:
+                pred = outputs[("color", frame_id, scale)]
+
+                reprojection_losses.append(
+                    self.compute_reprojection_loss(pred, target))
             reprojection_losses = torch.cat(reprojection_losses, 1)
 
             if not self.opt.disable_automasking:
@@ -688,6 +685,11 @@ class FullModel(nn.Module):
                 reprojection_loss = reprojection_losses.mean(1, keepdim=True)
             else:
                 reprojection_loss = reprojection_losses
+
+            # Sparse mask
+            # mask_wo_lidar = (lidar <= 1e-12)
+            # reprojection_losses = mask_wo_lidar * reprojection_losses
+            # identity_reprojection_loss = mask_wo_lidar * identity_reprojection_loss
 
             if not self.opt.disable_automasking:
                 # add random numbers to break ties
@@ -772,11 +774,8 @@ class FullModel(nn.Module):
                 source_scale = 0
 
             # FIXME: using depth as disp now
-            # _, depth = disp_to_depth(disp, self.opt.min_depth,
-            #                          self.opt.max_depth)
-            # Directly predict depth result
             depth = disp
-            # outputs[("disp", 0, scale)] = 1 / (depth + 1e-7)
+            # depth = 1 / (disp + 1e-12)
             outputs[("depth", 0, scale)] = depth
 
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):
