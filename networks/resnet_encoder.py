@@ -36,7 +36,7 @@ class ResNetMultiImageInput(models.ResNet):
                                     padding=3,
                                     bias=False)
             self.bn_i = nn.BatchNorm2d(48)
-            self.conv_s = nn.Conv2d(3 * num_input_images,
+            self.conv_s = nn.Conv2d(1 * num_input_images,
                                     16,
                                     kernel_size=7,
                                     stride=2,
@@ -152,7 +152,7 @@ class ResnetEncoder(nn.Module):
         x = (input_image - 0.45) / 0.225
         if self.sparse:
             feat_i = self.encoder.bn_i(
-                self.encoder.conv_i(x[:, 3 * self.num_input_images:, :, :]))
+                self.encoder.conv_i(x[:, :3 * self.num_input_images, :, :]))
             # feat_i = self.encoder.bn_i(feat_i)
             feat_s = self.encoder.bn_s(
                 self.encoder.conv_s(x[:, 3 * self.num_input_images:, :, :]))

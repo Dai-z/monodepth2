@@ -38,8 +38,8 @@ def compute_errors(gt, pred):
 
     rmse = (gt - pred)**2
     # [m] to [mm]
-    rmse = np.sqrt(rmse.mean()) * 1000
-    mae = np.abs(gt - pred).mean() * 1000
+    rmse = np.sqrt(rmse[gt.nonzero()].mean()) * 1000
+    mae = np.abs(gt - pred)[gt.nonzero()].mean() * 1000
 
     return rmse, mae, a1, a2, a3
 
@@ -133,9 +133,11 @@ def evaluate(opt):
 
                 output = depth_decoder(encoder(input_color))
 
-                pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth,
-                                             opt.max_depth)
-                pred_disp = pred_disp.cpu()[:, 0].numpy()
+                # FIXME: using depth as disp
+                # pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth,
+                #                              opt.max_depth)
+                pred_disp = output[("disp", 0)].cpu()[:, 0].numpy()
+                # pred_disp = pred_disp.cpu()[:, 0].numpy()
 
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
@@ -220,7 +222,9 @@ def evaluate(opt):
 
         pred_disp = pred_disps[i]
         pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
-        pred_depth = 1 / pred_disp
+        # FIXME: using depth as disp now
+        # pred_depth = 1 / pred_disp
+        pred_depth = pred_disp
 
         mask = gt_depth > 0
 
@@ -265,7 +269,7 @@ def evaluate(opt):
             # exit()
 
             ratios.append(ratio)
-            pred_depth *= ratio
+            # pred_depth *= ratio
 
         pred_depth = pred_depth[mask]
         gt_depth = gt_depth[mask]

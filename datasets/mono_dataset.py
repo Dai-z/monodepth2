@@ -10,6 +10,7 @@ import os
 import random
 import numpy as np
 import copy
+from cv2 import cv2
 from PIL import Image  # using pillow-simd for increased speed
 
 import torch
@@ -17,12 +18,22 @@ import torch.utils.data as data
 from torchvision import transforms
 
 
-def pil_loader(path):
+def pil_loader(path, img_type='RGB'):
     # open path as file to avoid ResourceWarning
     # (https://github.com/python-pillow/Pillow/issues/835)
-    with open(path, 'rb') as f:
-        with Image.open(f) as img:
-            return img.convert('RGB')
+    if img_type == 'RGB':
+        with open(path, 'rb') as f:
+            with Image.open(f) as img:
+                return img.convert('RGB')
+    else:
+        # Convert to [m] scale
+        img_depth = np.float32(cv2.imread(path, cv2.IMREAD_ANYDEPTH)) / 256
+        try:
+            im = Image.fromarray(img_depth, mode='F')
+        except:
+            print(path)
+            exit()
+        return im
 
 
 class MonoDataset(data.Dataset):
@@ -81,10 +92,14 @@ class MonoDataset(data.Dataset):
             self.hue = 0.1
 
         self.resize = {}
+        self.nearest_resize = {}
         for i in range(self.num_scales):
             s = 2**i
             self.resize[i] = transforms.Resize(
                 (self.height // s, self.width // s), interpolation=self.interp)
+            self.nearest_resize[i] = transforms.Resize(
+                (self.height // s, self.width // s),
+                interpolation=Image.NEAREST)
 
         self.load_depth = self.check_depth()
 
@@ -97,18 +112,21 @@ class MonoDataset(data.Dataset):
         """
         keys = list(inputs.keys())
         for k in keys:
-            frame = inputs[k]
-            if "color" in k or 'lidar' in k:
+            if "color" in k:
                 n, im, i = k
                 for i in range(self.num_scales):
                     inputs[(n, im, i)] = self.resize[i](inputs[(n, im, i - 1)])
-
+            if 'lidar' in k:
+                n, im, i = k
+                for i in range(self.num_scales):
+                    inputs[(n, im, i)] = self.nearest_resize[i](inputs[(n, im,
+                                                                        i - 1)])
         keys = list(inputs.keys())
         for k in keys:
             f = inputs[k]
             if "color" in k or 'lidar' in k:
                 n, im, i = k
-                inputs[(n, im, i)] = self.to_tensor(f)
+                inputs[(n, im, i)] = self.to_tensor(np.array(f))
                 if 'color' in k:
                     inputs[(n + "_aug", im, i)] = self.to_tensor(color_aug(f))
 
@@ -167,10 +185,9 @@ class MonoDataset(data.Dataset):
                 inputs[("color", i,
                         -1)] = self.get_color(folder, frame_index + i, side,
                                               do_flip)
-                inputs[("lidar", i, -1)] = self.get_lidar(
-                    folder.replace('image_0',
-                                   'proj_depth/velodyne_raw/image_0'),
-                    frame_index + i, side, do_flip)
+        inputs[("lidar", 0, -1)] = self.get_lidar(
+            folder.replace('image_0', 'proj_depth/velodyne_raw/image_0'),
+            frame_index + 0, side, do_flip)
 
         # adjusting intrinsics to match each scale in the pyramid
         for scale in range(self.num_scales):
@@ -194,8 +211,8 @@ class MonoDataset(data.Dataset):
 
         for i in self.frame_idxs:
             del inputs[("color", i, -1)]
-            del inputs[("lidar", i, -1)]
             del inputs[("color_aug", i, -1)]
+        del inputs[("lidar", 0, -1)]
 
         if self.load_depth:
             depth_gt = self.get_depth(folder, frame_index, side, do_flip)

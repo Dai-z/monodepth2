@@ -50,7 +50,7 @@ class KITTIDataset(MonoDataset):
         return color
 
     def get_lidar(self, folder, frame_index, side, do_flip):
-        lidar = self.loader(self.get_proj_velo_path(folder, frame_index, side))
+        lidar = self.loader(self.get_proj_velo_path(folder, frame_index, side), "Depth")
 
         if do_flip:
             lidar = lidar.transpose(pil.FLIP_LEFT_RIGHT)
@@ -75,7 +75,7 @@ class KITTIRAWDataset(KITTIDataset):
     def get_proj_velo_path(self, folder, frame_index, side):
         f_str = "{:010d}{}".format(frame_index, self.img_ext)
         image_path = os.path.join(self.data_path, folder,
-                                  "image_0{}/data".format(self.side_map[side]),
+                                  "proj_depth/velodyne_raw/image_0{}".format(self.side_map[side]),
                                   f_str)
         return image_path
 

@@ -66,16 +66,13 @@ class Trainer:
         self.model = FullModel(self.opt, self.device)
         # model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         self.model = self.model.to(self.device)
-        self.model = DDP(self.model,
-                         device_ids=[self.opt.local_rank],
-                         output_device=self.opt.local_rank,
-                         find_unused_parameters=True)
+        if self.distributed:
+            self.model = DDP(self.model,
+                             device_ids=[self.opt.local_rank],
+                             output_device=self.opt.local_rank,
+                             find_unused_parameters=True)
 
-        self.model_optimizer = optim.Adam(
-            filter(lambda p: p.requires_grad, self.model.parameters()),
-            self.opt.learning_rate)
-        self.model_lr_scheduler = optim.lr_scheduler.StepLR(
-            self.model_optimizer, self.opt.scheduler_step_size, 0.1)
+        self.get_opt_lr(0)
 
         if self.opt.load_weights_folder is not None:
             self.load_model()
@@ -116,7 +113,8 @@ class Trainer:
             self.train_sampler = DistributedSampler(train_dataset)
         else:
             self.train_sampler = None
-        self.opt.num_workers = self.opt.num_workers // torch.cuda.device_count()
+        ngpus = torch.cuda.device_count()
+        self.opt.num_workers = int((self.opt.num_workers + ngpus - 1) / ngpus)
         self.train_loader = DataLoader(train_dataset,
                                        self.opt.batch_size,
                                        shuffle=(self.train_sampler is None),
@@ -136,14 +134,13 @@ class Trainer:
             self.val_sampler = DistributedSampler(train_dataset)
         else:
             self.val_sampler = None
-        self.val_loader = DataLoader(
-            val_dataset,
-            self.opt.batch_size,
-            shuffle=False,
-            #  num_workers=self.opt.num_workers,
-            pin_memory=True,
-            drop_last=True,
-            sampler=self.val_sampler)
+        self.val_loader = DataLoader(val_dataset,
+                                     self.opt.batch_size,
+                                     shuffle=False,
+                                     num_workers=self.opt.num_workers,
+                                     pin_memory=True,
+                                     drop_last=True,
+                                     sampler=self.val_sampler)
         self.val_iter = iter(self.val_loader)
 
         self.writers = {}
@@ -162,6 +159,23 @@ class Trainer:
                   format(len(train_dataset), len(val_dataset)))
 
         self.save_opts()
+
+    def get_opt_lr(self, epoch):
+        k = 1
+        if self.distributed:
+            k = torch.distributed.get_world_size()
+        if epoch >= self.opt.warmup_epochs:
+            self.model_optimizer = optim.Adam(
+                filter(lambda p: p.requires_grad, self.model.parameters()),
+                self.opt.learning_rate * k)
+            self.model_lr_scheduler = optim.lr_scheduler.StepLR(
+                self.model_optimizer, self.opt.scheduler_step_size, 0.1)
+        else:
+            self.model_optimizer = optim.Adam(
+                filter(lambda p: p.requires_grad, self.model.parameters()),
+                self.opt.learning_rate)
+            self.model_lr_scheduler = optim.lr_scheduler.StepLR(
+                self.model_optimizer, self.opt.scheduler_step_size, 1)
 
     def set_train(self):
         """Convert all models to training mode
@@ -183,6 +197,8 @@ class Trainer:
         self.start_time = time.time()
 
         for self.epoch in range(self.opt.num_epochs):
+            if self.epoch == self.opt.warmup_epochs:
+                self.get_opt_lr(self.epoch)
             if not self.train_sampler is None:
                 self.train_sampler.set_epoch(self.epoch)
             self.run_epoch()
@@ -199,7 +215,9 @@ class Trainer:
         self.set_train()
 
         if self.opt.local_rank == 0:
-            t = tqdm(total=len(self.train_loader))
+            t = tqdm(total=len(self.train_loader),
+                     bar_format="[{postfix[0]}]|{bar}{r_bar}",
+                     postfix=[self.epoch])
         for batch_idx, inputs in enumerate(self.train_loader):
 
             before_op_time = time.time()
@@ -407,7 +425,7 @@ class FullModel(nn.Module):
         if self.opt.use_stereo:
             self.opt.frame_ids.append("s")
 
-        self.module_names = ['encoder', 'decoder']
+        self.module_names = ['encoder', 'depth']
         # Define modules
         # Encoder
         self.encoder = networks.ResnetEncoder(
@@ -601,7 +619,6 @@ class FullModel(nn.Module):
         for scale in self.opt.scales:
             loss = 0
             reprojection_losses = []
-            sparse_losses = []
 
             if self.opt.v1_multiscale:
                 source_scale = scale
@@ -609,23 +626,24 @@ class FullModel(nn.Module):
                 source_scale = 0
 
             disp = outputs[("disp", scale)]
+            pred_depth = outputs[("depth", 0, scale)]
             color = inputs[("color", 0, scale)]
             target = inputs[("color", 0, source_scale)]
 
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
-                lidar = inputs[('lidar', frame_id, 0)]
 
-                lidar_mask = lidar > 0
-                sparse_losses.append(
-                    self.compute_sparse_loss(pred, lidar, lidar_mask))
                 # FIXME: Add mask
                 reprojection_losses.append(
                     self.compute_reprojection_loss(pred,
                                                    target))  #, (lidar <= 0)))
+            # sparse loss
+            lidar = inputs[('lidar', 0, 0)]
+            lidar_mask = lidar > 0
+            sparse_loss = self.compute_sparse_loss(pred_depth, lidar,
+                                                   lidar_mask)
 
             reprojection_losses = torch.cat(reprojection_losses, 1)
-            sparse_losses = torch.cat(sparse_losses, 1)
 
             if not self.opt.disable_automasking:
                 identity_reprojection_losses = []
@@ -670,9 +688,8 @@ class FullModel(nn.Module):
                 identity_reprojection_loss = identity_reprojection_loss + torch.randn(
                     identity_reprojection_loss.shape).cuda() * 0.00001
 
-                combined = torch.cat((identity_reprojection_loss,
-                                      reprojection_loss, sparse_losses),
-                                     dim=1)
+                combined = torch.cat(
+                    (identity_reprojection_loss, reprojection_loss), dim=1)
             else:
                 combined = reprojection_loss
 
@@ -687,6 +704,7 @@ class FullModel(nn.Module):
 
             # reprojection & saprse loss
             loss = loss + to_optimise.mean()
+            loss += sparse_loss
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
@@ -708,7 +726,10 @@ class FullModel(nn.Module):
         selected_pred = mask * pred
         selected_lidar = mask * lidar
         abs_diff = torch.abs(selected_lidar - selected_pred)
-        l1_loss = abs_diff.mean(1, True)
+        # printc('==========')
+        # printc(selected_pred.min())
+        # printc(selected_lidar.max())
+        l1_loss = abs_diff.sum() / mask.sum()
         return l1_loss
 
     def compute_reprojection_loss(self, pred, target, mask=None):
@@ -744,11 +765,12 @@ class FullModel(nn.Module):
                                      align_corners=False)
                 source_scale = 0
 
+            # FIXME: using depth as disp now
             # _, depth = disp_to_depth(disp, self.opt.min_depth,
             #                          self.opt.max_depth)
             # Directly predict depth result
             depth = disp
-            outputs[("disp", 0, scale)] = 1 / (depth + 1e-7)
+            # outputs[("disp", 0, scale)] = 1 / (depth + 1e-7)
             outputs[("depth", 0, scale)] = depth
 
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):
@@ -792,10 +814,11 @@ class FullModel(nn.Module):
         """Save model weights to disk
         """
 
-        for model_name, model in self.models.items():
-            save_path = os.path.join(save_folder, "{}.pth".format(model_name))
-            to_save = model.state_dict()
-            if model_name == 'encoder':
+        for module_name in self.module_names:
+            save_path = os.path.join(save_folder, "{}.pth".format(module_name))
+            m = getattr(self, module_name)
+            to_save = m.state_dict()
+            if module_name == 'encoder':
                 # save the sizes - these are needed at prediction time
                 to_save['height'] = self.opt.height
                 to_save['width'] = self.opt.width
@@ -806,8 +829,9 @@ class FullModel(nn.Module):
         """Load model(s) from disk
         """
 
+        printc('load [{}]'.format(self.opt.local_rank))
         for name in self.opt.models_to_load:
-            print("Loading {} weights...".format(name))
+            print("[{}]Loading {} weights...".format(self.opt.local_rank, name))
             path = os.path.join(self.opt.load_weights_folder,
                                 "{}.pth".format(name))
             m = getattr(self, name)

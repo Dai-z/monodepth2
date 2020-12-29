@@ -8,3 +8,4 @@ __pycache__
 kitti_data
 models
 .vscode/
+core.*

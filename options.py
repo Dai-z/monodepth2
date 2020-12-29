@@ -95,7 +95,7 @@ class MonodepthOptions:
         self.parser.add_argument("--batch_size",
                                  type=int,
                                  help="batch size",
-                                 default=8)
+                                 default=12)
         self.parser.add_argument("--learning_rate",
                                  type=float,
                                  help="learning rate",
@@ -104,10 +104,13 @@ class MonodepthOptions:
                                  type=int,
                                  help="number of epochs",
                                  default=20)
-        self.parser.add_argument("--scheduler_step_size",
+        self.parser.add_argument("--warmup_epochs",
                                  type=int,
+                                 help="number of warmup epochs",
+                                 default=5)
+        self.parser.add_argument("--scheduler_step_size", type=int,
                                  help="step size of the scheduler",
-                                 default=15)
+                                 default=10)
 
         # ABLATION options
         self.parser.add_argument("--v1_multiscale",
