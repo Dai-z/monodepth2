@@ -25,6 +25,7 @@ from layers import *
 
 import datasets
 import networks
+from lr import WarmUpLR
 from IPython import embed
 from tqdm import tqdm
 
@@ -72,8 +73,6 @@ class Trainer:
                              output_device=self.opt.local_rank,
                              find_unused_parameters=True)
 
-        self.get_opt_lr(0)
-
         if self.opt.load_weights_folder is not None:
             self.load_model()
 
@@ -93,7 +92,8 @@ class Trainer:
         fpath = os.path.join(os.path.dirname(__file__), "splits",
                              self.opt.split, "{}_files.txt")
 
-        train_filenames = readlines(fpath.format("train"))
+        train_filenames = readlines(fpath.format("mini_train"))
+        self.opt.log_frequency = 1
         val_filenames = readlines(fpath.format("val"))
         img_ext = '.png' if self.opt.png else '.jpg'
 
@@ -143,13 +143,15 @@ class Trainer:
                                      sampler=self.val_sampler)
         self.val_iter = iter(self.val_loader)
 
+        self.get_opt_lr(0)
+
         self.writers = {}
         for mode in ["train", "val"]:
             self.writers[mode] = SummaryWriter(os.path.join(
                 self.log_path, mode))
 
         self.depth_metric_names = [
-            "de/abs_rel", "de/sq_rel", "de/rms", "de/log_rms", "da/a1", "da/a2",
+            "de/abs_rel", "de/sq_rel", "de/rmse", "de/log_rmse", "da/a1", "da/a2",
             "da/a3"
         ]
 
@@ -157,6 +159,7 @@ class Trainer:
             print("Using split:\n  ", self.opt.split)
             print("There are {:d} training items and {:d} validation items\n".
                   format(len(train_dataset), len(val_dataset)))
+
 
         self.save_opts()
 
@@ -174,8 +177,9 @@ class Trainer:
             self.model_optimizer = optim.Adam(
                 filter(lambda p: p.requires_grad, self.model.parameters()),
                 self.opt.learning_rate)
-            self.model_lr_scheduler = optim.lr_scheduler.StepLR(
-                self.model_optimizer, self.opt.scheduler_step_size, 1)
+            delta = ((k - 1) * self.opt.learning_rate) / (
+                len(self.train_loader) * self.opt.warmup_epochs)
+            self.model_lr_scheduler = WarmUpLR(self.model_optimizer, 1, delta)
 
     def set_train(self):
         """Convert all models to training mode
@@ -236,8 +240,8 @@ class Trainer:
 
             if self.opt.local_rank == 0:
                 if (early_phase or late_phase):
-                    self.log_time(batch_idx, duration,
-                                  losses["loss"].cpu().data)
+                    # self.log_time(batch_idx, duration,
+                    #               losses["loss"].cpu().data)
 
                     if "depth_gt" in inputs:
                         self.compute_depth_losses(inputs, outputs, losses)
@@ -247,6 +251,8 @@ class Trainer:
                     # self.val()
                 t.update()
 
+            if self.epoch < self.opt.warmup_epochs:
+                self.model_lr_scheduler.step()
             self.step += 1
         self.model_lr_scheduler.step()
 
@@ -294,8 +300,8 @@ class Trainer:
 
         depth_gt = depth_gt[mask]
         depth_pred = depth_pred[mask]
-        depth_pred = depth_pred * torch.median(depth_gt) / torch.median(
-            depth_pred)
+        # depth_pred = depth_pred * torch.median(depth_gt) / torch.median(
+        #     depth_pred)
 
         depth_pred = torch.clamp(depth_pred, min=1e-3, max=80)
 

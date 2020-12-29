@@ -2,7 +2,7 @@
 
 TEST=false
 if [ $TEST = true ] ; then
-    GPUS='0'
+    GPUS='7'
     ARGS="--model_name test_parallel --num_workers 1 --load_weights_folder ~/tmp/mdp/models/weights_19"
 else
     GPUS='0,1,2,3,4,5,6'

@@ -280,13 +280,15 @@ def evaluate(opt):
         errors.append(compute_errors(gt_depth, pred_depth))
 
     stds = np.array(stds)
-    print('stds, max: {}, min: {}'.format(np.max(stds), np.min(stds)))
+    print('std in single image | max: {:.3f}, min: {:.3f}'.format(
+        np.max(stds), np.min(stds)))
 
     if not opt.disable_median_scaling:
         ratios = np.array(ratios)
         med = np.median(ratios)
-        print(" Scaling ratios | med: {:0.3f} | std: {:0.3f}".format(
-            med, np.std(ratios / med)))
+        print(
+            " Scaling ratios | min: {:.3f} | max: {:.3f} | med: {:0.3f} | std: {:0.3f}"
+            .format(ratios.min(), ratios.max(), med, np.std(ratios)))
 
     mean_errors = np.array(errors).mean(0)
 
