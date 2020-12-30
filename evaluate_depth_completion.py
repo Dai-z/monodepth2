@@ -94,7 +94,9 @@ def evaluate(opt):
                                 pin_memory=True,
                                 drop_last=False)
 
-        encoder = networks.ResnetEncoder(opt.num_layers, False, sparse=True)
+        encoder = networks.ResnetEncoder(opt.num_layers,
+                                         False,
+                                         sparse=not opt.no_sparse)
         depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
 
         model_dict = encoder.state_dict()
@@ -120,6 +122,8 @@ def evaluate(opt):
 
         print("-> Computing predictions with size {}x{}".format(
             encoder_dict['width'], encoder_dict['height']))
+        model_info = 'without' if opt.no_sparse else 'with'
+        print("-> Model {} lidar input.".format(model_info))
 
         t = tqdm(total=len(dataloader))
         with torch.no_grad():
@@ -131,7 +135,10 @@ def evaluate(opt):
                     # Post-processed results require each image to have two forward passes
                     input_color = torch.cat(
                         (input_color, torch.flip(input_color, [3])), 0)
-                input_data = torch.cat((input_color,input_lidar), 1)
+                if opt.no_sparse:
+                    input_data = input_color
+                else:
+                    input_data = torch.cat((input_color, input_lidar), 1)
 
                 output = depth_decoder(encoder(input_data))
 
@@ -268,7 +275,7 @@ def evaluate(opt):
             # exit()
 
             ratios.append(ratio)
-            # pred_depth *= ratio
+            pred_depth *= ratio
 
         pred_depth = pred_depth[mask]
         gt_depth = gt_depth[mask]

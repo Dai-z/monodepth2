@@ -111,8 +111,15 @@ class MonodepthOptions:
         self.parser.add_argument("--scheduler_step_size", type=int,
                                  help="step size of the scheduler",
                                  default=10)
+        self.parser.add_argument("--start_epoch",
+                                 type=int,
+                                 help="start epoch",
+                                 default=0)
 
         # ABLATION options
+        self.parser.add_argument("--no_sparse",
+                                 help="build model without sparse input",
+                                 action="store_true")
         self.parser.add_argument("--v1_multiscale",
                                  help="if set, uses monodepth v1 multiscale",
                                  action="store_true")

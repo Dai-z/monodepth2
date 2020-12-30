@@ -67,11 +67,13 @@ class Trainer:
         self.model = FullModel(self.opt, self.device)
         # model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         self.model = self.model.to(self.device)
+
         if self.distributed:
             self.model = DDP(self.model,
                              device_ids=[self.opt.local_rank],
                              output_device=self.opt.local_rank,
                              find_unused_parameters=True)
+
 
         # data
         datasets_dict = {
@@ -83,9 +85,10 @@ class Trainer:
         fpath = os.path.join(os.path.dirname(__file__), "splits",
                              self.opt.split, "{}_files.txt")
 
-        train_filenames = readlines(fpath.format("mini_train"))
-        self.opt.log_frequency = 1
+        train_filenames = readlines(fpath.format("train"))
         val_filenames = readlines(fpath.format("val"))
+        if len(train_filenames) < 5000:
+            self.opt.log_frequency = 1
         img_ext = '.png' if self.opt.png else '.jpg'
 
         num_train_samples = len(train_filenames)
@@ -134,13 +137,15 @@ class Trainer:
                                      sampler=self.val_sampler)
         self.val_iter = iter(self.val_loader)
 
-        self.get_opt_lr(0)
+        self.set_opt_lr(0)
 
         if self.opt.load_weights_folder is not None:
             self.load_model()
 
         if self.opt.local_rank == 0:
             print("Training model named:\n  ", self.opt.model_name)
+            model_info = 'without' if self.opt.no_sparse else 'with'
+            print("Training model {} sparse input:\n  ".format(model_info))
             print("Models and tensorboard events files are saved to:\n  ",
                   self.opt.log_dir)
             print("Training is using:\n  ", self.device)
@@ -162,14 +167,16 @@ class Trainer:
 
         self.save_opts()
 
-    def get_opt_lr(self, epoch):
+    def set_opt_lr(self, epoch):
         k = 1
         if self.distributed:
             k = torch.distributed.get_world_size()
         if epoch >= self.opt.warmup_epochs:
-            self.model_optimizer = optim.Adam(
-                filter(lambda p: p.requires_grad, self.model.parameters()),
-                self.opt.learning_rate * k)
+            # self.model_optimizer = optim.Adam(
+            #     filter(lambda p: p.requires_grad, self.model.parameters()),
+            #     self.opt.learning_rate * k)
+            for param in self.model_optimizer.param_groups:
+                param['lr'] = self.opt.learning_rate * k
             self.model_lr_scheduler = optim.lr_scheduler.StepLR(
                 self.model_optimizer, self.opt.scheduler_step_size, 0.1)
         else:
@@ -201,9 +208,9 @@ class Trainer:
         if self.opt.local_rank == 0:
             print("Training")
 
-        for self.epoch in range(self.opt.num_epochs):
+        for self.epoch in range(self.opt.start_epoch, self.opt.num_epochs):
             if self.epoch == self.opt.warmup_epochs:
-                self.get_opt_lr(self.epoch)
+                self.set_opt_lr(self.epoch)
             if not self.train_sampler is None:
                 self.train_sampler.set_epoch(self.epoch)
             self.run_epoch()
@@ -253,6 +260,8 @@ class Trainer:
             if self.epoch < self.opt.warmup_epochs:
                 self.model_lr_scheduler.step()
             self.step += 1
+        if self.opt.local_rank == 0:
+            t.close()
         self.model_lr_scheduler.step()
 
     def val(self):
@@ -333,14 +342,16 @@ class Trainer:
         for j in range(min(
                 4, self.opt.batch_size)):  # write a maxmimum of four images
             for s in self.opt.scales:
+                if s > 0:
+                    break
                 for frame_id in self.opt.frame_ids:
                     writer.add_image("color_{}_{}/{}".format(frame_id, s, j),
                                      inputs[("color", frame_id, s)][j].data,
                                      self.step)
-                    if s == 0 and frame_id != 0:
-                        writer.add_image(
-                            "color_pred_{}_{}/{}".format(frame_id, s, j),
-                            outputs[("color", frame_id, s)][j].data, self.step)
+                    # if s == 0 and frame_id != 0:
+                    #     writer.add_image(
+                    #         "color_pred_{}_{}/{}".format(frame_id, s, j),
+                    #         outputs[("color", frame_id, s)][j].data, self.step)
 
                 writer.add_image("disp_{}/{}".format(s, j),
                                  normalize_image(outputs[("disp", s)][j]),
@@ -355,12 +366,12 @@ class Trainer:
                                                                            ...],
                             self.step)
 
-                elif not self.opt.disable_automasking:
-                    writer.add_image(
-                        "automask_{}/{}".format(s, j),
-                        outputs["identity_selection/{}".format(s)][j][None,
-                                                                      ...],
-                        self.step)
+                # elif not self.opt.disable_automasking:
+                #     writer.add_image(
+                #         "automask_{}/{}".format(s, j),
+                #         outputs["identity_selection/{}".format(s)][j][None,
+                #                                                       ...],
+                #         self.step)
 
     def save_opts(self):
         """Save options to disk so we know what we ran this experiment with
@@ -393,25 +404,23 @@ class Trainer:
         self.opt.load_weights_folder = os.path.expanduser(
             self.opt.load_weights_folder)
 
-        if self.distributed:
-            self.model.module.load_model()
-        else:
-            self.model.load_model()
-
         assert os.path.isdir(self.opt.load_weights_folder), \
             "Cannot find folder {}".format(self.opt.load_weights_folder)
-        print("loading model from folder {}".format(
-            self.opt.load_weights_folder))
+        if self.opt.local_rank == 0:
+            print("loading model from folder {}".format(
+                self.opt.load_weights_folder))
 
         # loading adam state
         optimizer_load_path = os.path.join(self.opt.load_weights_folder,
                                            "adam.pth")
         if os.path.isfile(optimizer_load_path):
-            print("Loading Adam weights")
-            optimizer_dict = torch.load(optimizer_load_path)
+            if self.opt.local_rank == 0:
+                print("Loading Adam weights")
+            optimizer_dict = torch.load(optimizer_load_path, map_location='cpu')
             self.model_optimizer.load_state_dict(optimizer_dict)
         else:
-            print("Cannot find Adam weights so Adam is randomly initialized")
+            if self.opt.local_rank == 0:
+                print("Cannot find Adam weights so Adam is randomly initialized")
 
 
 class FullModel(nn.Module):
@@ -436,13 +445,11 @@ class FullModel(nn.Module):
         self.encoder = networks.ResnetEncoder(
             self.opt.num_layers,
             self.opt.weights_init == "pretrained",
-            sparse=True)
-        self.encoder.to(self.device)
+            sparse=not self.opt.no_sparse)
         num_ch_enc = self.encoder.num_ch_enc
 
         # Depth decoder
         self.depth = networks.DepthDecoder(num_ch_enc, self.opt.scales)
-        self.depth.to(self.device)
 
         # Pose net
         if self.use_pose_net:
@@ -452,7 +459,6 @@ class FullModel(nn.Module):
                     self.opt.num_layers,
                     self.opt.weights_init == "pretrained",
                     num_input_images=self.num_pose_frames)
-                self.pose_encoder.to(self.device)
                 num_ch_pose_enc = self.pose_encoder.num_ch_enc
                 self.module_names.append('pose_encoder')
                 # pose decoder
@@ -465,7 +471,7 @@ class FullModel(nn.Module):
             elif self.opt.pose_model_type == "posecnn":
                 self.pose = networks.PoseCNN(self.num_input_frames if self.opt.
                                              pose_model_input == "all" else 2)
-            self.pose.to(self.device)
+            # self.pose.to(self.device)
             self.module_names.append('pose')
 
         if self.opt.predictive_mask:
@@ -499,6 +505,12 @@ class FullModel(nn.Module):
             self.project_3d[scale] = Project3D(self.opt.batch_size, h, w)
             self.project_3d[scale].to(self.device)
 
+        # Send model to gpu after loading weights
+        if self.opt.load_weights_folder is not None:
+            self.load_model()
+        for name in self.opt.models_to_load:
+            getattr(self, name).to(self.device)
+
     def forward(self, inputs):
         """Pass a minibatch through the network and generate images and losses
         """
@@ -522,9 +534,13 @@ class FullModel(nn.Module):
             outputs = self.depth(features[0])
         else:
             # Otherwise, we only feed the image with frame_id 0 through the depth encoder
-            features = self.encoder(
-                torch.cat((inputs["color_aug", 0, 0], inputs['lidar', 0, 0]),
-                          1))
+            if self.encoder.sparse:
+                features = self.encoder(
+                    torch.cat(
+                        (inputs["color_aug", 0, 0], inputs['lidar', 0, 0]), 1))
+            else:
+                features = self.encoder(inputs["color_aug", 0, 0])
+
             outputs = self.depth(features)
 
         if self.opt.predictive_mask:
@@ -635,11 +651,12 @@ class FullModel(nn.Module):
             color = inputs[("color", 0, scale)]
             target = inputs[("color", 0, source_scale)]
 
-            # sparse loss
-            lidar = inputs[('lidar', 0, 0)]
-            lidar_mask = lidar > 0
-            sparse_loss = self.compute_sparse_loss(pred_depth, lidar,
-                                                   lidar_mask)
+            # # sparse loss
+            # lidar = inputs[('lidar', 0, 0)]
+            # lidar_mask = lidar > 0
+            # sparse_loss = self.compute_sparse_loss(pred_depth, lidar,
+            #                                        lidar_mask)
+            # loss += sparse_loss
 
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
@@ -712,7 +729,6 @@ class FullModel(nn.Module):
 
             # reprojection & saprse loss
             loss = loss + to_optimise.mean()
-            loss += sparse_loss
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
@@ -834,14 +850,14 @@ class FullModel(nn.Module):
         """Load model(s) from disk
         """
 
-        printc('load [{}]'.format(self.opt.local_rank))
         for name in self.opt.models_to_load:
-            print("[{}]Loading {} weights...".format(self.opt.local_rank, name))
+            if self.opt.local_rank == 0:
+                print("[{}]Loading {} weights...".format(self.opt.local_rank, name))
             path = os.path.join(self.opt.load_weights_folder,
                                 "{}.pth".format(name))
             m = getattr(self, name)
             model_dict = m.state_dict()
-            pretrained_dict = torch.load(path)
+            pretrained_dict = torch.load(path, map_location='cpu')
             pretrained_dict = {
                 k: v for k, v in pretrained_dict.items() if k in model_dict
             }
