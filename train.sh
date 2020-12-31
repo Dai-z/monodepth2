@@ -7,7 +7,8 @@ if [ $TEST = true ] ; then
     PORT=2334
 else
     GPUS='0,1,2,3,4,5,6'
-    ARGS="--num_workers 120 --load_weights_folder $HOME/tmp/mdp/models/weights_5 --start_epoch 5 "
+    ARGS="--num_workers 120 "
+    # --load_weights_folder $HOME/tmp/mdp/models/weights_5 --start_epoch 5 "
     PORT=2333
 fi
 

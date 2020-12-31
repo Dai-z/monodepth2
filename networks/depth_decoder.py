@@ -15,7 +15,15 @@ from layers import *
 
 
 class DepthDecoder(nn.Module):
-    def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True):
+    """
+    Decoder part of depth-net for depth completion
+    """
+
+    def __init__(self,
+                 num_ch_enc,
+                 scales=range(4),
+                 num_output_channels=1,
+                 use_skips=True):
         super(DepthDecoder, self).__init__()
 
         self.num_output_channels = num_output_channels
@@ -30,7 +38,8 @@ class DepthDecoder(nn.Module):
         self.convs = OrderedDict()
         for i in range(4, -1, -1):
             # upconv_0
-            num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i + 1]
+            num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i +
+                                                                           1]
             num_ch_out = self.num_ch_dec[i]
             self.convs[("upconv", i, 0)] = ConvBlock(num_ch_in, num_ch_out)
 
@@ -42,10 +51,12 @@ class DepthDecoder(nn.Module):
             self.convs[("upconv", i, 1)] = ConvBlock(num_ch_in, num_ch_out)
 
         for s in self.scales:
-            self.convs[("dispconv", s)] = Conv3x3(self.num_ch_dec[s], self.num_output_channels)
+            self.convs[("dispconv", s)] = Conv3x3(self.num_ch_dec[s],
+                                                  self.num_output_channels)
 
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, input_features):
         self.outputs = {}

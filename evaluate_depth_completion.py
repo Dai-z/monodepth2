@@ -231,50 +231,47 @@ def evaluate(opt):
         # FIXME: using depth as disp now
         # pred_depth = 1 / pred_disp
         pred_depth = pred_disp
-
         mask = gt_depth > 0
 
         pred_depth *= opt.pred_depth_scale_factor
-        if not opt.disable_median_scaling:
-            # ratio = np.median(gt_depth) / np.median(pred_depth)
-            # ratio = np.mean(gt_depth) / np.mean(pred_depth)
+        # Calc ratios
+        # ratio = np.median(gt_depth) / np.median(pred_depth)
+        # ratio = np.mean(gt_depth) / np.mean(pred_depth)
+        ratio = np.mean(velodyne_depth[velodyne_mask] /
+                        pred_depth[velodyne_mask])
+        ratio_image = velodyne_depth[velodyne_mask] / pred_depth[velodyne_mask]
+        ratio = ratio_image.mean()
+        # print('ratio std {}: {}'.format(ratio_image.mean(), np.std(ratio_image)))
+        stds.append(np.std(ratio_image))
 
-            ratio = np.mean(velodyne_depth[velodyne_mask] /
-                            pred_depth[velodyne_mask])
-            # ratio = 1
-            ratio_image = velodyne_depth[velodyne_mask] / pred_depth[
-                velodyne_mask]
-            ratio = ratio_image.mean()
-            # print('ratio std {}: {}'.format(ratio_image.mean(), np.std(ratio_image)))
-            stds.append(np.std(ratio_image))
+        # vis_var = np.zeros(pred_depth.shape)
+        # var_image = np.log(abs(ratio_image - ratio))
+        # vis_var[mask_idx] = var_image
+        # max_var = vis_var.max()
+        # # Create color bar
+        # colorbar = np.uint8(
+        #     np.repeat(np.linspace(255, 0,
+        #                           num=pred_depth.shape[0])[:, np.newaxis],
+        #               100,
+        #               axis=1)[:, :, np.newaxis])
+        # colorbar = cv2.applyColorMap(colorbar, cv2.COLORMAP_JET)
+        # colorbar = cv2.putText(colorbar, '{:.2E}'.format(vis_var.max()),
+        #                        (0, 10), cv2.FONT_HERSHEY_COMPLEX, .5,
+        #                        (204, 255, 102), 1)
+        # # visualize variance
+        # vis_var /= max_var
+        # vis_var = np.uint8(vis_var * 255)
+        # vis_var = cv2.applyColorMap(vis_var, cv2.COLORMAP_JET)
+        # vis_var[:,:,0] *= velodyne_mask
+        # vis_var[:,:,1] *= velodyne_mask
+        # vis_var[:,:,2] *= velodyne_mask
+        # vis_var = np.concatenate((vis_var, colorbar), axis=1)
+        # cv2.imwrite('log_var.jpg', vis_var)
+        # time.sleep(.1)
+        # exit()
 
-            # vis_var = np.zeros(pred_depth.shape)
-            # var_image = np.log(abs(ratio_image - ratio))
-            # vis_var[mask_idx] = var_image
-            # max_var = vis_var.max()
-            # # Create color bar
-            # colorbar = np.uint8(
-            #     np.repeat(np.linspace(255, 0,
-            #                           num=pred_depth.shape[0])[:, np.newaxis],
-            #               100,
-            #               axis=1)[:, :, np.newaxis])
-            # colorbar = cv2.applyColorMap(colorbar, cv2.COLORMAP_JET)
-            # colorbar = cv2.putText(colorbar, '{:.2E}'.format(vis_var.max()),
-            #                        (0, 10), cv2.FONT_HERSHEY_COMPLEX, .5,
-            #                        (204, 255, 102), 1)
-            # # visualize variance
-            # vis_var /= max_var
-            # vis_var = np.uint8(vis_var * 255)
-            # vis_var = cv2.applyColorMap(vis_var, cv2.COLORMAP_JET)
-            # vis_var[:,:,0] *= velodyne_mask
-            # vis_var[:,:,1] *= velodyne_mask
-            # vis_var[:,:,2] *= velodyne_mask
-            # vis_var = np.concatenate((vis_var, colorbar), axis=1)
-            # cv2.imwrite('log_var.jpg', vis_var)
-            # time.sleep(.1)
-            # exit()
-
-            ratios.append(ratio)
+        ratios.append(ratio)
+        if opt.median_scaling:
             pred_depth *= ratio
 
         pred_depth = pred_depth[mask]
@@ -289,12 +286,11 @@ def evaluate(opt):
     print('std in single image | max: {:.3f}, min: {:.3f}'.format(
         np.max(stds), np.min(stds)))
 
-    if not opt.disable_median_scaling:
-        ratios = np.array(ratios)
-        med = np.median(ratios)
-        print(
-            " Scaling ratios | min: {:.3f} | max: {:.3f} | med: {:0.3f} | std: {:0.3f}"
-            .format(ratios.min(), ratios.max(), med, np.std(ratios)))
+    ratios = np.array(ratios)
+    med = np.median(ratios)
+    print(
+        " Scaling ratios | min: {:.3f} | max: {:.3f} | med: {:0.3f} | std: {:0.3f}"
+        .format(ratios.min(), ratios.max(), med, np.std(ratios)))
 
     mean_errors = np.array(errors).mean(0)
 

@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
 
 import json
+from tqdm import tqdm
 
 from utils import *
 from kitti_utils import *
@@ -27,7 +28,6 @@ import datasets
 import networks
 from lr import WarmUpLR
 from IPython import embed
-from tqdm import tqdm
 
 
 # Freeze bn https://discuss.pytorch.org/t/freeze-batchnorm-layer-lead-to-nan/8385
@@ -38,6 +38,9 @@ def set_bn_eval(m):
 
 
 class Trainer:
+    """
+    Model trainer
+    """
 
     def __init__(self, options):
         self.opt = options
@@ -73,7 +76,6 @@ class Trainer:
                              device_ids=[self.opt.local_rank],
                              output_device=self.opt.local_rank,
                              find_unused_parameters=True)
-
 
         # data
         datasets_dict = {
@@ -171,21 +173,23 @@ class Trainer:
         k = 1
         if self.distributed:
             k = torch.distributed.get_world_size()
-        if epoch >= self.opt.warmup_epochs:
-            # self.model_optimizer = optim.Adam(
-            #     filter(lambda p: p.requires_grad, self.model.parameters()),
-            #     self.opt.learning_rate * k)
-            for param in self.model_optimizer.param_groups:
-                param['lr'] = self.opt.learning_rate * k
-            self.model_lr_scheduler = optim.lr_scheduler.StepLR(
-                self.model_optimizer, self.opt.scheduler_step_size, 0.1)
-        else:
+        if epoch < self.opt.warmup_epochs:
             self.model_optimizer = optim.Adam(
                 filter(lambda p: p.requires_grad, self.model.parameters()),
                 self.opt.learning_rate)
             delta = ((k - 1) * self.opt.learning_rate) / (
                 len(self.train_loader) * self.opt.warmup_epochs)
             self.model_lr_scheduler = WarmUpLR(self.model_optimizer, 1, delta)
+        else:
+            if hasattr(self, 'model_optimizer'):
+                for param in self.model_optimizer.param_groups:
+                    param['lr'] = self.opt.learning_rate * k
+            else:
+                self.model_optimizer = optim.Adam(
+                    filter(lambda p: p.requires_grad, self.model.parameters()),
+                    self.opt.learning_rate * k)
+            self.model_lr_scheduler = optim.lr_scheduler.StepLR(
+                self.model_optimizer, self.opt.scheduler_step_size, 0.1)
 
     def set_train(self):
         """Convert all models to training mode
@@ -377,7 +381,7 @@ class Trainer:
         """Save options to disk so we know what we ran this experiment with
         """
         models_dir = os.path.join(self.log_path, "models")
-        if not os.path.exists(models_dir):
+        if not os.path.exists(models_dir) and self.opt.local_rank == 0:
             os.makedirs(models_dir)
         to_save = self.opt.__dict__.copy()
 
@@ -385,9 +389,11 @@ class Trainer:
             json.dump(to_save, f, indent=2)
 
     def save_model(self):
+        """Save model weights to disk
+        """
         save_folder = os.path.join(self.log_path, "models",
                                    "weights_{}".format(self.epoch))
-        if not os.path.exists(save_folder):
+        if not os.path.exists(save_folder) and self.opt.local_rank == 0:
             os.makedirs(save_folder)
 
         if self.distributed:
@@ -420,10 +426,14 @@ class Trainer:
             self.model_optimizer.load_state_dict(optimizer_dict)
         else:
             if self.opt.local_rank == 0:
-                print("Cannot find Adam weights so Adam is randomly initialized")
+                print(
+                    "Cannot find Adam weights so Adam is randomly initialized")
 
 
 class FullModel(nn.Module):
+    """
+    Full training model including depth & pose branch.
+    """
 
     def __init__(self, opt, device):
         super(FullModel, self).__init__()
@@ -471,7 +481,6 @@ class FullModel(nn.Module):
             elif self.opt.pose_model_type == "posecnn":
                 self.pose = networks.PoseCNN(self.num_input_frames if self.opt.
                                              pose_model_input == "all" else 2)
-            # self.pose.to(self.device)
             self.module_names.append('pose')
 
         if self.opt.predictive_mask:
@@ -651,12 +660,12 @@ class FullModel(nn.Module):
             color = inputs[("color", 0, scale)]
             target = inputs[("color", 0, source_scale)]
 
-            # # sparse loss
-            # lidar = inputs[('lidar', 0, 0)]
-            # lidar_mask = lidar > 0
-            # sparse_loss = self.compute_sparse_loss(pred_depth, lidar,
-            #                                        lidar_mask)
-            # loss += sparse_loss
+            # sparse loss
+            lidar = inputs[('lidar', 0, 0)]
+            lidar_mask = lidar > 0
+            sparse_loss = self.compute_sparse_loss(pred_depth, lidar,
+                                                   lidar_mask)
+            loss += sparse_loss
 
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
@@ -852,7 +861,8 @@ class FullModel(nn.Module):
 
         for name in self.opt.models_to_load:
             if self.opt.local_rank == 0:
-                print("[{}]Loading {} weights...".format(self.opt.local_rank, name))
+                print("[{}]Loading {} weights...".format(
+                    self.opt.local_rank, name))
             path = os.path.join(self.opt.load_weights_folder,
                                 "{}.pth".format(name))
             m = getattr(self, name)
