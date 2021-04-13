@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TEST=false
+TEST=true
 GPUS='0'
 if [ $TEST = true ] ; then
     ARGS="--model_name test_parallel --num_workers 1"

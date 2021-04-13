@@ -28,6 +28,46 @@ splits_dir = os.path.join(os.path.dirname(__file__), "splits")
 STEREO_SCALE_FACTOR = 5.4
 
 
+def optimize_with_lidar(opt, encoder, depth_decoder, data):
+    params = []
+    for _, param in encoder.named_parameters():
+        if param.requires_grad:
+            params.append(param)
+    for _, param in depth_decoder.named_parameters():
+        if param.requires_grad:
+            params.append(param)
+    optimizer = torch.optim.Adam(params, lr=1e-4)
+    prev_loss = 0
+
+    input_color = data[("color", 0, 0)].cuda()
+    input_lidar = data[("lidar", 0, 0)].cuda()
+    if opt.sparse:
+        input_data = torch.cat((input_color, input_lidar), 1)
+    else:
+        input_data = input_color
+    for _ in range(100):
+        output = depth_decoder(encoder(input_data))
+        loss = 0
+        for scale in opt.scales:
+            lidar = data[("lidar", 0, scale)].cuda()
+            disp = output[("disp", scale)]
+            mask = lidar > 0
+            _, pred = disp_to_depth(disp, opt.min_depth, opt.max_depth)
+            selected_pred = pred[mask]
+            selected_lidar = lidar[mask]
+            if opt.median_scaling:
+                ratio = float((selected_lidar / selected_pred).median())
+                selected_pred *= ratio
+            loss += ((selected_lidar - selected_pred)**2).mean()
+        if abs(prev_loss - loss) / loss < 1e-2:
+            break
+        prev_loss = float(loss)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    return depth_decoder(encoder(input_data))
+
+
 def compute_errors(gt, pred):
     """Computation of error metrics between predicted and ground truth depths
     """
@@ -60,7 +100,6 @@ def evaluate(opt):
     """
     MIN_DEPTH = 1e-3
     MAX_DEPTH = 80
-
     opt.eval_split = 'completion'
     opt.eval_mono = 1
     opt.eval_stereo = 0
@@ -68,6 +107,11 @@ def evaluate(opt):
     opt.load_weights_folder = os.path.expanduser(opt.load_weights_folder)
     filenames = readlines(
         os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
+    gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
+    gt_depths = np.load(gt_path,
+                        fix_imports=True,
+                        encoding='latin1',
+                        allow_pickle=True)["data"]
     if opt.ext_disp_to_eval is None:
         assert os.path.isdir(opt.load_weights_folder), \
             "Cannot find a folder at {}".format(opt.load_weights_folder)
@@ -102,17 +146,17 @@ def evaluate(opt):
 
         model_dict = encoder.state_dict()
 
-        encoder.load_state_dict({
+        encoder_state = {
             k.replace('module.', ''): v
             for k, v in encoder_dict.items()
             if k.replace('module.', '') in model_dict
-        })
-
-        decoder_dict = torch.load(decoder_path)
-        corrected_dict = {
-            k.replace('module.', ''): v for k, v in decoder_dict.items()
         }
-        depth_decoder.load_state_dict(corrected_dict)
+        encoder.load_state_dict(encoder_state)
+        decoder_state = torch.load(decoder_path)
+        decoder_state = {
+            k.replace('module.', ''): v for k, v in decoder_state.items()
+        }
+        depth_decoder.load_state_dict(decoder_state)
 
         encoder.cuda()
         encoder.eval()
@@ -126,12 +170,18 @@ def evaluate(opt):
         model_info = 'with' if opt.sparse else 'without'
         print("-> Model {} lidar input.".format(model_info))
 
-        t = tqdm(total=len(dataloader))
-        with torch.no_grad():
-            for data in dataloader:
+        if opt.batch_size > 1:
+            iterator = tqdm(dataloader)
+        else:
+            iterator = dataloader
+        for idx, data in enumerate(iterator):
+            if opt.optimize:
+                encoder.load_state_dict(encoder_state)
+                depth_decoder.load_state_dict(decoder_state)
+                output = optimize_with_lidar(opt, encoder, depth_decoder, data)
+            else:
                 input_color = data[("color", 0, 0)].cuda()
                 input_lidar = data[("lidar", 0, 0)].cuda()
-
                 if opt.post_process:
                     # Post-processed results require each image to have two forward passes
                     input_color = torch.cat(
@@ -140,26 +190,39 @@ def evaluate(opt):
                     input_data = torch.cat((input_color, input_lidar), 1)
                 else:
                     input_data = input_color
-
                 output = depth_decoder(encoder(input_data))
 
-                if opt.sparse:
-                    # pred_disp = output[("disp", 0)].cpu()[:, 0].numpy()
-                    pred_disp, _ = disp_to_depth(output[("disp", 0)],
-                                                 opt.min_depth, opt.max_depth)
-                    pred_disp = pred_disp.cpu()[:, 0].numpy()
-                else:
-                    pred_disp, _ = disp_to_depth(output[("disp", 0)],
-                                                 opt.min_depth, opt.max_depth)
-                    pred_disp = pred_disp.cpu()[:, 0].numpy()
+            if opt.sparse:
+                # pred_disp = output[("disp", 0)].cpu()[:, 0].numpy()
+                pred_disp, pred_depth = disp_to_depth(output[("disp", 0)],
+                                                      opt.min_depth,
+                                                      opt.max_depth)
+            else:
+                pred_disp, pred_depth = disp_to_depth(output[("disp", 0)],
+                                                      opt.min_depth,
+                                                      opt.max_depth)
+            pred_disp = pred_disp.detach().cpu()[:, 0].numpy()
+            pred_depth = pred_depth.detach().cpu()[0, 0].numpy()
 
-                if opt.post_process:
-                    N = pred_disp.shape[0] // 2
-                    pred_disp = batch_post_process_disparity(
-                        pred_disp[:N], pred_disp[N:, :, ::-1])
+            if opt.batch_size == 1:
+                lidar = data[("lidar", 0, 0)][0, 0]
+                mask = lidar > 0
+                if opt.median_scaling:
+                    ratio = float((lidar[mask] / pred_depth[mask]).median())
+                    pred_depth *= ratio
+                gt_depth = gt_depths[idx]
+                gt_height, gt_width = gt_depth.shape[:2]
+                pred_depth = cv2.resize(pred_depth, (gt_width, gt_height))
+                pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
+                pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
+                print(compute_errors(gt_depth, pred_depth))
 
-                pred_disps.append(pred_disp)
-                t.update()
+            if opt.post_process:
+                N = pred_disp.shape[0] // 2
+                pred_disp = batch_post_process_disparity(
+                    pred_disp[:N], pred_disp[N:, :, ::-1])
+
+            pred_disps.append(pred_disp)
 
         pred_disps = np.concatenate(pred_disps)
 
@@ -202,15 +265,6 @@ def evaluate(opt):
             save_path = os.path.join(save_dir, "{:010d}.png".format(idx))
             cv2.imwrite(save_path, depth)
 
-        # print("-> No ground truth is available for the KITTI benchmark, so not evaluating. Done.")
-        # quit()
-
-    gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
-    gt_depths = np.load(gt_path,
-                        fix_imports=True,
-                        encoding='latin1',
-                        allow_pickle=True)["data"]
-
     print("   Mono evaluation - {} using median scaling".format(
         "" if opt.median_scaling else "not"))
 
@@ -247,38 +301,9 @@ def evaluate(opt):
 
         pred_depth *= opt.pred_depth_scale_factor
         # Calc ratios
-        # ratio = np.median(gt_depth) / np.median(pred_depth)
-        # ratio = np.mean(gt_depth) / np.mean(pred_depth)
         ratio_image = velodyne_depth[velodyne_mask] / pred_depth[velodyne_mask]
         ratio = ratio_image.mean()
-        # print('ratio std {}: {}'.format(ratio_image.mean(), np.std(ratio_image)))
         stds.append(np.std(ratio_image))
-
-        # vis_var = np.zeros(pred_depth.shape)
-        # var_image = np.log(abs(ratio_image - ratio))
-        # vis_var[mask_idx] = var_image
-        # max_var = vis_var.max()
-        # # Create color bar
-        # colorbar = np.uint8(
-        #     np.repeat(np.linspace(255, 0,
-        #                           num=pred_depth.shape[0])[:, np.newaxis],
-        #               100,
-        #               axis=1)[:, :, np.newaxis])
-        # colorbar = cv2.applyColorMap(colorbar, cv2.COLORMAP_JET)
-        # colorbar = cv2.putText(colorbar, '{:.2E}'.format(vis_var.max()),
-        #                        (0, 10), cv2.FONT_HERSHEY_COMPLEX, .5,
-        #                        (204, 255, 102), 1)
-        # # visualize variance
-        # vis_var /= max_var
-        # vis_var = np.uint8(vis_var * 255)
-        # vis_var = cv2.applyColorMap(vis_var, cv2.COLORMAP_JET)
-        # vis_var[:,:,0] *= velodyne_mask
-        # vis_var[:,:,1] *= velodyne_mask
-        # vis_var[:,:,2] *= velodyne_mask
-        # vis_var = np.concatenate((vis_var, colorbar), axis=1)
-        # cv2.imwrite('log_var.jpg', vis_var)
-        # time.sleep(.1)
-        # exit()
 
         ratios.append(ratio)
         if opt.median_scaling:

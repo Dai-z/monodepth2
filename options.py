@@ -242,6 +242,9 @@ class MonodepthOptions:
             help="if set will perform the flipping post processing "
             "from the original monodepth paper",
             action="store_true")
+        self.parser.add_argument('--optimize',
+                                 action='store_true',
+                                 help='optimize netweights with lidar data')
 
     def parse(self):
         self.options = self.parser.parse_args()

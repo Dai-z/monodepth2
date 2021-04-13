@@ -244,8 +244,8 @@ class Trainer:
             duration = time.time() - before_op_time
 
             # log less frequently after the first 2000 steps to save time & disk space
-            early_phase = batch_idx % self.opt.log_frequency == 0 and self.step < 2000
-            late_phase = self.step % 2000 == 0
+            early_phase = self.step < 2000
+            late_phase = self.step % self.opt.log_frequency == 0
 
             if self.opt.local_rank == 0:
                 if (early_phase or late_phase):
@@ -647,6 +647,7 @@ class FullModel(nn.Module):
         """
         losses = {}
         total_loss = 0
+        losses['loss/sparse'] = 0
 
         for scale in self.opt.scales:
             loss = 0
@@ -667,7 +668,8 @@ class FullModel(nn.Module):
             lidar_mask = lidar > 0
             sparse_loss = self.compute_sparse_loss(pred_depth, lidar,
                                                    lidar_mask)
-            loss += sparse_loss
+            loss += sparse_loss * 0.1
+            losses['loss/sparse'] += sparse_loss * 0.1
 
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
@@ -718,6 +720,7 @@ class FullModel(nn.Module):
             # mask_wo_lidar = (lidar <= 1e-12)
             # reprojection_losses = mask_wo_lidar * reprojection_losses
             # identity_reprojection_loss = mask_wo_lidar * identity_reprojection_loss
+            # check gradient
 
             if not self.opt.disable_automasking:
                 # add random numbers to break ties
@@ -738,7 +741,7 @@ class FullModel(nn.Module):
                 outputs["identity_selection/{}".format(scale)] = (
                     idxs > identity_reprojection_loss.shape[1] - 1).float()
 
-            # reprojection & saprse loss
+            # reprojection & sparse loss
             loss = loss + to_optimise.mean()
 
             mean_disp = disp.mean(2, True).mean(3, True)
