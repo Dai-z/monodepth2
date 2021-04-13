@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TEST=true
+TEST=false
 GPUS='0'
 if [ $TEST = true ] ; then
     ARGS="--model_name test_parallel --num_workers 1"
@@ -34,6 +34,4 @@ python -m torch.distributed.launch \
 #  --load_weights_folder models/mono_640x192 \
 #  --load_weights_folder ~/tmp/mdp/models/weights_19 \
 
-if [ $TEST = false ] ; then
-    kill -9 $(ps aux | grep '='$PORT | grep -v grep | awk '{print $2}')
-fi
+kill -9 $(ps aux | grep '='$PORT | grep -v grep | awk '{print $2}')
