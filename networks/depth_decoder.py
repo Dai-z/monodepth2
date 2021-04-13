@@ -23,7 +23,8 @@ class DepthDecoder(nn.Module):
                  num_ch_enc,
                  scales=range(4),
                  num_output_channels=1,
-                 use_skips=True):
+                 use_skips=True,
+                 sparse=False):
         super(DepthDecoder, self).__init__()
 
         self.num_output_channels = num_output_channels
@@ -33,6 +34,7 @@ class DepthDecoder(nn.Module):
 
         self.num_ch_enc = num_ch_enc
         self.num_ch_dec = np.array([16, 32, 64, 128, 256])
+        self.sparse = sparse
 
         # decoder
         self.convs = OrderedDict()
@@ -57,6 +59,7 @@ class DepthDecoder(nn.Module):
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
         self.relu = nn.ReLU(inplace=True)
+        self.sparse = sparse
 
     def forward(self, input_features):
         self.outputs = {}
@@ -71,7 +74,10 @@ class DepthDecoder(nn.Module):
             x = torch.cat(x, 1)
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
-                # self.outputs[("disp", i)] = self.sigmoid(self.convs[("dispconv", i)](x))
-                self.outputs[("disp", i)] = self.convs[("dispconv", i)](x)
+                # if self.sparse:
+                #     self.outputs[("disp", i)] = self.convs[("dispconv", i)](x)
+                # else:
+                self.outputs[("disp", i)] = self.sigmoid(self.convs[("dispconv",
+                                                                     i)](x))
 
         return self.outputs

@@ -86,7 +86,7 @@ def test_simple(args):
 
     print("   Loading pretrained decoder")
     depth_decoder = networks.DepthDecoder(num_ch_enc=encoder.num_ch_enc,
-                                          scales=range(4))
+                                          scales=range(4), sparse=opt.sparse)
 
     loaded_dict = torch.load(depth_decoder_path, map_location=device)
     depth_decoder.load_state_dict(loaded_dict)

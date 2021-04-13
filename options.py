@@ -108,7 +108,8 @@ class MonodepthOptions:
                                  type=int,
                                  help="number of warmup epochs",
                                  default=5)
-        self.parser.add_argument("--scheduler_step_size", type=int,
+        self.parser.add_argument("--scheduler_step_size",
+                                 type=int,
                                  help="step size of the scheduler",
                                  default=10)
         self.parser.add_argument("--start_epoch",
@@ -118,8 +119,9 @@ class MonodepthOptions:
 
         # ABLATION options
         self.parser.add_argument("--no_sparse",
+                                 dest='sparse',
                                  help="build model without sparse input",
-                                 action="store_true")
+                                 action="store_false")
         self.parser.add_argument("--v1_multiscale",
                                  help="if set, uses monodepth v1 multiscale",
                                  action="store_true")
@@ -196,10 +198,9 @@ class MonodepthOptions:
         self.parser.add_argument("--eval_mono",
                                  help="if set evaluates in mono mode",
                                  action="store_true")
-        self.parser.add_argument(
-            "--median_scaling",
-            help="if set use median scaling in evaluation",
-            action="store_true")
+        self.parser.add_argument("--median_scaling",
+                                 help="if set use median scaling in evaluation",
+                                 action="store_true")
         self.parser.add_argument(
             "--disable_median_scaling",
             help="if set disables median scaling in evaluation",

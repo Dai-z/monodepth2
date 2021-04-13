@@ -68,10 +68,10 @@ class Trainer:
         assert self.opt.frame_ids[0] == 0, "frame_ids must start with 0"
 
         self.model = FullModel(self.opt, self.device)
-        # model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         self.model = self.model.to(self.device)
 
         if self.distributed:
+            self.model = nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
             self.model = DDP(self.model,
                              device_ids=[self.opt.local_rank],
                              output_device=self.opt.local_rank,
@@ -144,18 +144,18 @@ class Trainer:
         if self.opt.load_weights_folder is not None:
             self.load_model()
 
+        self.writers = {}
         if self.opt.local_rank == 0:
             print("Training model named:\n  ", self.opt.model_name)
-            model_info = 'without' if self.opt.no_sparse else 'with'
+            model_info = 'with' if self.opt.sparse else 'without'
             print("Training model {} sparse input:\n  ".format(model_info))
             print("Models and tensorboard events files are saved to:\n  ",
                   self.opt.log_dir)
             print("Training is using:\n  ", self.device)
 
-        self.writers = {}
-        for mode in ["train", "val"]:
-            self.writers[mode] = SummaryWriter(os.path.join(
-                self.log_path, mode))
+            for mode in ["train", "val"]:
+                self.writers[mode] = SummaryWriter(
+                    os.path.join(self.log_path, mode))
 
         self.depth_metric_names = [
             "de/abs_rel", "de/sq_rel", "de/rmse", "de/log_rmse", "da/a1",
@@ -166,8 +166,7 @@ class Trainer:
             print("Using split:\n  ", self.opt.split)
             print("There are {:d} training items and {:d} validation items\n".
                   format(len(train_dataset), len(val_dataset)))
-
-        self.save_opts()
+            self.save_opts()
 
     def set_opt_lr(self, epoch):
         k = 1
@@ -455,11 +454,13 @@ class FullModel(nn.Module):
         self.encoder = networks.ResnetEncoder(
             self.opt.num_layers,
             self.opt.weights_init == "pretrained",
-            sparse=not self.opt.no_sparse)
+            sparse=self.opt.sparse)
         num_ch_enc = self.encoder.num_ch_enc
 
         # Depth decoder
-        self.depth = networks.DepthDecoder(num_ch_enc, self.opt.scales)
+        self.depth = networks.DepthDecoder(num_ch_enc,
+                                           self.opt.scales,
+                                           sparse=self.opt.sparse)
 
         # Pose net
         if self.use_pose_net:
@@ -492,7 +493,8 @@ class FullModel(nn.Module):
             self.predictive_mask = networks.DepthDecoder(
                 num_ch_enc,
                 self.opt.scales,
-                num_output_channels=(len(self.opt.frame_ids) - 1))
+                num_output_channels=(len(self.opt.frame_ids) - 1),
+                sparse=self.opt.sparse)
             self.predictive_mask.to(self.device)
             self.module_names.append('predictive_mask')
 
@@ -798,9 +800,13 @@ class FullModel(nn.Module):
                                      align_corners=False)
                 source_scale = 0
 
-            # FIXME: using depth as disp now
-            depth = disp
-            # depth = 1 / (disp + 1e-12)
+            if self.opt.sparse:
+                # depth = disp
+                _, depth = disp_to_depth(disp, self.opt.min_depth,
+                                         self.opt.max_depth)
+            else:
+                _, depth = disp_to_depth(disp, self.opt.min_depth,
+                                         self.opt.max_depth)
             outputs[("depth", 0, scale)] = depth
 
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):

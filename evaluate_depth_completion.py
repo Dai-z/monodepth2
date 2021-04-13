@@ -88,7 +88,7 @@ def evaluate(opt):
                                            is_train=False,
                                            img_ext='.png')
         dataloader = DataLoader(dataset,
-                                16,
+                                opt.batch_size,
                                 shuffle=False,
                                 num_workers=opt.num_workers,
                                 pin_memory=True,
@@ -96,8 +96,9 @@ def evaluate(opt):
 
         encoder = networks.ResnetEncoder(opt.num_layers,
                                          False,
-                                         sparse=not opt.no_sparse)
-        depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
+                                         sparse=opt.sparse)
+        depth_decoder = networks.DepthDecoder(encoder.num_ch_enc,
+                                              sparse=opt.sparse)
 
         model_dict = encoder.state_dict()
 
@@ -122,7 +123,7 @@ def evaluate(opt):
 
         print("-> Computing predictions with size {}x{}".format(
             encoder_dict['width'], encoder_dict['height']))
-        model_info = 'without' if opt.no_sparse else 'with'
+        model_info = 'with' if opt.sparse else 'without'
         print("-> Model {} lidar input.".format(model_info))
 
         t = tqdm(total=len(dataloader))
@@ -135,14 +136,22 @@ def evaluate(opt):
                     # Post-processed results require each image to have two forward passes
                     input_color = torch.cat(
                         (input_color, torch.flip(input_color, [3])), 0)
-                if opt.no_sparse:
-                    input_data = input_color
-                else:
+                if opt.sparse:
                     input_data = torch.cat((input_color, input_lidar), 1)
+                else:
+                    input_data = input_color
 
                 output = depth_decoder(encoder(input_data))
 
-                pred_disp = output[("disp", 0)].cpu()[:, 0].numpy()
+                if opt.sparse:
+                    # pred_disp = output[("disp", 0)].cpu()[:, 0].numpy()
+                    pred_disp, _ = disp_to_depth(output[("disp", 0)],
+                                                 opt.min_depth, opt.max_depth)
+                    pred_disp = pred_disp.cpu()[:, 0].numpy()
+                else:
+                    pred_disp, _ = disp_to_depth(output[("disp", 0)],
+                                                 opt.min_depth, opt.max_depth)
+                    pred_disp = pred_disp.cpu()[:, 0].numpy()
 
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
@@ -202,7 +211,8 @@ def evaluate(opt):
                         encoding='latin1',
                         allow_pickle=True)["data"]
 
-    print("   Mono evaluation - using median scaling")
+    print("   Mono evaluation - {} using median scaling".format(
+        "" if opt.median_scaling else "not"))
 
     errors = []
     ratios = []
@@ -228,17 +238,17 @@ def evaluate(opt):
 
         pred_disp = pred_disps[i]
         pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
-        # FIXME: using depth as disp now
-        # pred_depth = 1 / pred_disp
-        pred_depth = pred_disp
+        if opt.sparse:
+            # pred_depth = pred_disp
+            pred_depth = 1 / pred_disp
+        else:
+            pred_depth = 1 / pred_disp
         mask = gt_depth > 0
 
         pred_depth *= opt.pred_depth_scale_factor
         # Calc ratios
         # ratio = np.median(gt_depth) / np.median(pred_depth)
         # ratio = np.mean(gt_depth) / np.mean(pred_depth)
-        ratio = np.mean(velodyne_depth[velodyne_mask] /
-                        pred_depth[velodyne_mask])
         ratio_image = velodyne_depth[velodyne_mask] / pred_depth[velodyne_mask]
         ratio = ratio_image.mean()
         # print('ratio std {}: {}'.format(ratio_image.mean(), np.std(ratio_image)))
