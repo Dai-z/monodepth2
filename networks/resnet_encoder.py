@@ -144,9 +144,8 @@ class ResnetEncoder(nn.Module):
             feat_s = self.encoder.bn_s(
                 self.encoder.conv_s(x[:, 3 * self.num_input_images:, :, :]))
             feat_s = self.encoder.bn_s(feat_s)
-            # x = torch.cat((feat_i, feat_s), 1)
-            self.features.append(
-                self.encoder.relu(torch.cat((feat_i, feat_s), 1)))
+            out = torch.cat((feat_i, feat_s), 1)
+            self.features.append(self.encoder.relu(out))
         else:
             out = self.encoder.conv1(x)
             out = self.encoder.bn1(out)

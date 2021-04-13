@@ -26,8 +26,8 @@ def pil_loader(path, img_type='RGB'):
             with Image.open(f) as img:
                 return img.convert('RGB')
     else:
-        # Convert to [m] scale
-        img_depth = np.float32(cv2.imread(path, cv2.IMREAD_ANYDEPTH)) / 256
+        # Convert to 0~1 scale
+        img_depth = np.float32(cv2.imread(path, cv2.IMREAD_ANYDEPTH)) / 256 / 80
         try:
             im = Image.fromarray(img_depth, mode='F')
         except:

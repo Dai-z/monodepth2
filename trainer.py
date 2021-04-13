@@ -173,11 +173,11 @@ class Trainer:
         if self.distributed:
             k = torch.distributed.get_world_size()
         if epoch < self.opt.warmup_epochs:
+            delta = ((k - 1) * self.opt.learning_rate) / (
+                (len(self.train_loader) * self.opt.warmup_epochs))
             self.model_optimizer = optim.Adam(
                 filter(lambda p: p.requires_grad, self.model.parameters()),
-                self.opt.learning_rate)
-            delta = ((k - 1) * self.opt.learning_rate) / (
-                len(self.train_loader) * self.opt.warmup_epochs)
+                delta)
             self.model_lr_scheduler = WarmUpLR(self.model_optimizer, 1, delta)
         else:
             if hasattr(self, 'model_optimizer'):
@@ -233,15 +233,11 @@ class Trainer:
                      postfix=[self.epoch])
         for batch_idx, inputs in enumerate(self.train_loader):
 
-            before_op_time = time.time()
-
             outputs, losses = self.model(inputs)
 
             self.model_optimizer.zero_grad()
             losses["loss"].backward()
             self.model_optimizer.step()
-
-            duration = time.time() - before_op_time
 
             # log less frequently after the first 2000 steps to save time & disk space
             early_phase = self.step < 2000
@@ -255,6 +251,9 @@ class Trainer:
                     if "depth_gt" in inputs:
                         self.compute_depth_losses(inputs, outputs, losses)
 
+                    self.writers["train"].add_scalar(
+                        "lr", self.model_optimizer.param_groups[0]['lr'],
+                        self.step)
                     self.log("train",
                              inputs,
                              outputs,
@@ -270,7 +269,8 @@ class Trainer:
             self.step += 1
         if self.opt.local_rank == 0:
             t.close()
-        self.model_lr_scheduler.step()
+        if self.epoch >= self.opt.warmup_epochs:
+            self.model_lr_scheduler.step()
 
     def val(self):
         """validate the model on a single minibatch
@@ -300,19 +300,19 @@ class Trainer:
         so is only used to give an indication of validation performance
         """
         depth_pred = outputs[("depth", 0, 0)]
+        depth_gt = inputs["depth_gt"].cpu() * 80
+        mask = depth_gt > 0
+        height, width = depth_gt.shape[2:]
         depth_pred = torch.clamp(
-            F.interpolate(depth_pred, [375, 1242],
+            F.interpolate(depth_pred, [height, width],
                           mode="bilinear",
                           align_corners=False), 1e-3, 80)
         depth_pred = depth_pred.cpu().detach()
 
-        depth_gt = inputs["depth_gt"].cpu()
-        mask = depth_gt > 0
-
-        # garg/eigen crop
-        crop_mask = torch.zeros_like(mask)
-        crop_mask[:, :, 153:371, 44:1197] = 1
-        mask = mask * crop_mask
+        # # garg/eigen crop
+        # crop_mask = torch.zeros_like(mask)
+        # crop_mask[:, :, 153:371, 44:1197] = 1
+        # mask = mask * crop_mask
 
         depth_gt = depth_gt[mask]
         depth_pred = depth_pred[mask]
@@ -656,6 +656,8 @@ class FullModel(nn.Module):
         losses = {}
         total_loss = 0
         losses['loss/sparse'] = 0
+        losses['loss/reprojection'] = 0
+        losses['loss/smooth'] = 0
 
         for scale in self.opt.scales:
             loss = 0
@@ -672,12 +674,13 @@ class FullModel(nn.Module):
             target = inputs[("color", 0, source_scale)]
 
             # sparse loss
-            lidar = inputs[('lidar', 0, 0)]
+            lidar = inputs[('lidar', 0, 0)] * 80
             lidar_mask = lidar > 0
             sparse_loss = self.compute_sparse_loss(pred_depth, lidar,
                                                    lidar_mask)
-            loss += sparse_loss * 0.1
-            losses['loss/sparse'] += sparse_loss * 0.1
+            sparse_loss = sparse_loss / 80
+            loss += sparse_loss
+            losses['loss/sparse'] += sparse_loss
 
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
@@ -728,7 +731,6 @@ class FullModel(nn.Module):
             # mask_wo_lidar = (lidar <= 1e-12)
             # reprojection_losses = mask_wo_lidar * reprojection_losses
             # identity_reprojection_loss = mask_wo_lidar * identity_reprojection_loss
-            # check gradient
 
             if not self.opt.disable_automasking:
                 # add random numbers to break ties
@@ -751,14 +753,17 @@ class FullModel(nn.Module):
 
             # reprojection & sparse loss
             loss = loss + to_optimise.mean()
+            losses['loss/reprojection'] += to_optimise.mean()
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
 
             # smooth loss
-            loss = loss + self.opt.disparity_smoothness * smooth_loss / (2**
-                                                                         scale)
+            smooth_loss = (self.opt.disparity_smoothness * smooth_loss /
+                           (2**scale))
+            loss = loss + smooth_loss
+            losses['loss/reprojection'] += smooth_loss
             total_loss = total_loss + loss
             losses["loss/{}".format(scale)] = loss
 
@@ -812,7 +817,6 @@ class FullModel(nn.Module):
                 source_scale = 0
 
             if self.opt.sparse:
-                # depth = disp
                 _, depth = disp_to_depth(disp, self.opt.min_depth,
                                          self.opt.max_depth)
             else:

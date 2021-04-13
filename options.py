@@ -107,11 +107,11 @@ class MonodepthOptions:
         self.parser.add_argument("--warmup_epochs",
                                  type=int,
                                  help="number of warmup epochs",
-                                 default=5)
+                                 default=2)
         self.parser.add_argument("--scheduler_step_size",
                                  type=int,
                                  help="step size of the scheduler",
-                                 default=10)
+                                 default=6)
         self.parser.add_argument("--start_epoch",
                                  type=int,
                                  help="start epoch",

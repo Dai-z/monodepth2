@@ -215,6 +215,9 @@ def evaluate(opt):
                 pred_depth = cv2.resize(pred_depth, (gt_width, gt_height))
                 pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
                 pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
+                mask = gt_depth > 0
+                pred_depth = pred_depth[mask]
+                gt_depth = gt_depth[mask]
                 print(compute_errors(gt_depth, pred_depth))
 
             if opt.post_process:
