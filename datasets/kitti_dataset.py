@@ -30,16 +30,16 @@ class KITTIDataset(MonoDataset):
         self.full_res_shape = (1242, 375)
         self.side_map = {"2": 2, "3": 3, "l": 2, "r": 3}
 
-    # def check_depth(self):
-    #     line = self.filenames[0].split()
-    #     scene_name = line[0]
-    #     frame_index = int(line[1])
+    def check_depth(self):
+        line = self.filenames[0].split()
+        scene_name = line[0]
+        frame_index = int(line[1])
 
-    #     velo_filename = os.path.join(
-    #         self.data_path, scene_name,
-    #         "velodyne_points/data/{:010d}.bin".format(int(frame_index)))
+        velo_filename = os.path.join(
+            self.data_path, scene_name,
+            "velodyne_points/data/{:010d}.bin".format(int(frame_index)))
 
-    #     return os.path.isfile(velo_filename)
+        return os.path.isfile(velo_filename)
 
     def get_color(self, folder, frame_index, side, do_flip):
         color = self.loader(self.get_image_path(folder, frame_index, side))
@@ -73,6 +73,7 @@ class KITTIRAWDataset(KITTIDataset):
 
     def __init__(self, *args, **kwargs):
         super(KITTIRAWDataset, self).__init__(*args, **kwargs)
+        self.load_depth = self.check_depth()
 
     def get_image_path(self, folder, frame_index, side):
         f_str = "{:010d}{}".format(frame_index, self.img_ext)
@@ -123,6 +124,7 @@ class KITTIDepthDataset(KITTIDataset):
 
     def __init__(self, *args, **kwargs):
         super(KITTIDepthDataset, self).__init__(*args, **kwargs)
+        self.load_depth = True
 
     def get_image_path(self, folder, frame_index, side):
         f_str = "{:010d}{}".format(frame_index, self.img_ext)

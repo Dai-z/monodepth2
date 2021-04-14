@@ -210,10 +210,10 @@ class MonoDataset(data.Dataset):
 
         self.preprocess(inputs, color_aug)
 
-        for i in self.frame_idxs:
-            del inputs[("color", i, -1)]
-            del inputs[("color_aug", i, -1)]
-        del inputs[("lidar", 0, -1)]
+        # for i in self.frame_idxs:
+        #     del inputs[("color", i, -1)]
+        #     del inputs[("color_aug", i, -1)]
+        # del inputs[("lidar", 0, -1)]
 
         if self.load_depth:
             depth_gt = self.get_depth(folder, frame_index, side, do_flip)

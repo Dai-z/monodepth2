@@ -5,6 +5,7 @@ from cv2 import cv2
 import numpy as np
 
 import torch
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from layers import disp_to_depth
@@ -55,6 +56,12 @@ def optimize_with_lidar(opt, encoder, depth_decoder, data):
         loss = 0
         # if idx_iter <= 10:
         #     set_lr(optimizer, opt.learning_rate * (idx_iter + 1) / 10)
+        if -1 in opt.scales:
+            height, width = data[("lidar", 0, -1)].shape[2:]
+            output['disp', -1] = F.interpolate(output['disp', 0],
+                                               [height, width],
+                                               mode="bilinear",
+                                               align_corners=False)
         for scale in opt.scales:
             lidar = data[("lidar", 0, scale)].cuda() * 80
             disp = output[("disp", scale)]
