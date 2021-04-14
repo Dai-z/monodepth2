@@ -96,7 +96,8 @@ class MonodepthOptions:
                                  type=int,
                                  help="batch size",
                                  default=12)
-        self.parser.add_argument("--learning_rate",
+        self.parser.add_argument("--lr",
+                                 dest="learning_rate",
                                  type=float,
                                  help="learning rate",
                                  default=1e-4)
@@ -245,6 +246,10 @@ class MonodepthOptions:
         self.parser.add_argument('--optimize',
                                  action='store_true',
                                  help='optimize netweights with lidar data')
+        self.parser.add_argument('--num_iters',
+                                 type=int,
+                                 default=100,
+                                 help='max iteration of inference optimization')
 
     def parse(self):
         self.options = self.parser.parse_args()

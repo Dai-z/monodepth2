@@ -138,18 +138,15 @@ class ResnetEncoder(nn.Module):
         self.features = []
         x = (input_image - 0.45) / 0.225
         if self.sparse:
-            feat_i = self.encoder.bn_i(
-                self.encoder.conv_i(x[:, :3 * self.num_input_images, :, :]))
+            feat_i = self.encoder.conv_i(x[:, :3 * self.num_input_images, :, :])
             feat_i = self.encoder.bn_i(feat_i)
-            feat_s = self.encoder.bn_s(
-                self.encoder.conv_s(x[:, 3 * self.num_input_images:, :, :]))
+            feat_s = self.encoder.conv_s(x[:, 3 * self.num_input_images:, :, :])
             feat_s = self.encoder.bn_s(feat_s)
             out = torch.cat((feat_i, feat_s), 1)
-            self.features.append(self.encoder.relu(out))
         else:
             out = self.encoder.conv1(x)
             out = self.encoder.bn1(out)
-            self.features.append(self.encoder.relu(out))
+        self.features.append(self.encoder.relu(out))
         self.features.append(
             self.encoder.layer1(self.encoder.maxpool(self.features[-1])))
         self.features.append(self.encoder.layer2(self.features[-1]))

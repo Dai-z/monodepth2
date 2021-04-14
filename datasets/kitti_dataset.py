@@ -30,16 +30,16 @@ class KITTIDataset(MonoDataset):
         self.full_res_shape = (1242, 375)
         self.side_map = {"2": 2, "3": 3, "l": 2, "r": 3}
 
-    def check_depth(self):
-        line = self.filenames[0].split()
-        scene_name = line[0]
-        frame_index = int(line[1])
+    # def check_depth(self):
+    #     line = self.filenames[0].split()
+    #     scene_name = line[0]
+    #     frame_index = int(line[1])
 
-        velo_filename = os.path.join(
-            self.data_path, scene_name,
-            "velodyne_points/data/{:010d}.bin".format(int(frame_index)))
+    #     velo_filename = os.path.join(
+    #         self.data_path, scene_name,
+    #         "velodyne_points/data/{:010d}.bin".format(int(frame_index)))
 
-        return os.path.isfile(velo_filename)
+    #     return os.path.isfile(velo_filename)
 
     def get_color(self, folder, frame_index, side, do_flip):
         color = self.loader(self.get_image_path(folder, frame_index, side))
@@ -50,12 +50,21 @@ class KITTIDataset(MonoDataset):
         return color
 
     def get_lidar(self, folder, frame_index, side, do_flip):
-        lidar = self.loader(self.get_proj_velo_path(folder, frame_index, side), "Depth")
+        lidar = self.loader(self.get_proj_velo_path(folder, frame_index, side),
+                            "Depth")
 
         if do_flip:
             lidar = lidar.transpose(pil.FLIP_LEFT_RIGHT)
 
         return lidar
+
+    def get_proj_velo_path(self, folder, frame_index, side):
+        f_str = "{:010d}{}".format(frame_index, self.img_ext)
+        image_path = os.path.join(
+            self.data_path, folder,
+            "proj_depth/velodyne_raw/image_0{}".format(self.side_map[side]),
+            f_str)
+        return image_path
 
 
 class KITTIRAWDataset(KITTIDataset):
@@ -69,13 +78,6 @@ class KITTIRAWDataset(KITTIDataset):
         f_str = "{:010d}{}".format(frame_index, self.img_ext)
         image_path = os.path.join(self.data_path, folder,
                                   "image_0{}/data".format(self.side_map[side]),
-                                  f_str)
-        return image_path
-
-    def get_proj_velo_path(self, folder, frame_index, side):
-        f_str = "{:010d}{}".format(frame_index, self.img_ext)
-        image_path = os.path.join(self.data_path, folder,
-                                  "proj_depth/velodyne_raw/image_0{}".format(self.side_map[side]),
                                   f_str)
         return image_path
 

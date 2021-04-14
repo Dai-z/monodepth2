@@ -28,6 +28,11 @@ splits_dir = os.path.join(os.path.dirname(__file__), "splits")
 STEREO_SCALE_FACTOR = 5.4
 
 
+def set_lr(optimizer, lr):
+    for g in optimizer.param_groups:
+        g['lr'] = lr
+
+
 def optimize_with_lidar(opt, encoder, depth_decoder, data):
     params = []
     for _, param in encoder.named_parameters():
@@ -36,7 +41,7 @@ def optimize_with_lidar(opt, encoder, depth_decoder, data):
     for _, param in depth_decoder.named_parameters():
         if param.requires_grad:
             params.append(param)
-    optimizer = torch.optim.Adam(params, lr=1e-4)
+    optimizer = torch.optim.Adam(params, lr=opt.learning_rate)
     prev_loss = 0
 
     input_color = data[("color", 0, 0)].cuda()
@@ -45,11 +50,13 @@ def optimize_with_lidar(opt, encoder, depth_decoder, data):
         input_data = torch.cat((input_color, input_lidar), 1)
     else:
         input_data = input_color
-    for _ in range(100):
+    for idx_iter in range(opt.num_iters):
         output = depth_decoder(encoder(input_data))
         loss = 0
+        # if idx_iter <= 10:
+        #     set_lr(optimizer, opt.learning_rate * (idx_iter + 1) / 10)
         for scale in opt.scales:
-            lidar = data[("lidar", 0, scale)].cuda()
+            lidar = data[("lidar", 0, scale)].cuda() * 80
             disp = output[("disp", scale)]
             mask = lidar > 0
             _, pred = disp_to_depth(disp, opt.min_depth, opt.max_depth)
@@ -59,8 +66,9 @@ def optimize_with_lidar(opt, encoder, depth_decoder, data):
                 ratio = float((selected_lidar / selected_pred).median())
                 selected_pred *= ratio
             loss += ((selected_lidar - selected_pred)**2).mean()
-        if abs(prev_loss - loss) / loss < 1e-2:
-            break
+        # print(loss)
+        # if abs(prev_loss - loss) / loss < 1e-2:
+        #     break
         prev_loss = float(loss)
         optimizer.zero_grad()
         loss.backward()
@@ -124,13 +132,13 @@ def evaluate(opt):
         encoder_dict = torch.load(encoder_path)
 
         print(opt.eval_split)
-        dataset = datasets.KITTIRAWDataset(opt.data_path,
-                                           filenames,
-                                           encoder_dict['height'],
-                                           encoder_dict['width'], [0],
-                                           4,
-                                           is_train=False,
-                                           img_ext='.png')
+        dataset = datasets.KITTIDepthDataset(opt.data_path,
+                                             filenames,
+                                             encoder_dict['height'],
+                                             encoder_dict['width'], [0],
+                                             4,
+                                             is_train=False,
+                                             img_ext='.png')
         dataloader = DataLoader(dataset,
                                 opt.batch_size,
                                 shuffle=False,
@@ -205,12 +213,13 @@ def evaluate(opt):
             pred_depth = pred_depth.detach().cpu()[0, 0].numpy()
 
             if opt.batch_size == 1:
-                lidar = data[("lidar", 0, 0)][0, 0]
-                mask = lidar > 0
                 if opt.median_scaling:
+                    lidar = data[("lidar", 0, 0)][0, 0] * 80
+                    mask = lidar > 0
                     ratio = float((lidar[mask] / pred_depth[mask]).median())
                     pred_depth *= ratio
-                gt_depth = gt_depths[idx]
+                # gt_depth = gt_depths[idx]
+                gt_depth = data["depth_gt"][0, 0].numpy()
                 gt_height, gt_width = gt_depth.shape[:2]
                 pred_depth = cv2.resize(pred_depth, (gt_width, gt_height))
                 pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
@@ -218,7 +227,7 @@ def evaluate(opt):
                 mask = gt_depth > 0
                 pred_depth = pred_depth[mask]
                 gt_depth = gt_depth[mask]
-                print(compute_errors(gt_depth, pred_depth))
+                print('[{}]'.format(idx), compute_errors(gt_depth, pred_depth))
 
             if opt.post_process:
                 N = pred_disp.shape[0] // 2

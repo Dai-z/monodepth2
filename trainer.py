@@ -763,7 +763,7 @@ class FullModel(nn.Module):
             smooth_loss = (self.opt.disparity_smoothness * smooth_loss /
                            (2**scale))
             loss = loss + smooth_loss
-            losses['loss/reprojection'] += smooth_loss
+            losses['loss/smooth'] += smooth_loss
             total_loss = total_loss + loss
             losses["loss/{}".format(scale)] = loss
 

@@ -101,7 +101,8 @@ class MonoDataset(data.Dataset):
                 (self.height // s, self.width // s),
                 interpolation=Image.NEAREST)
 
-        self.load_depth = self.check_depth()
+        # self.load_depth = self.check_depth()
+        self.load_depth = True
 
     def preprocess(self, inputs, color_aug):
         """Resize colour images to the required scales and augment if required
