@@ -15,16 +15,7 @@ from layers import *
 
 
 class DepthDecoder(nn.Module):
-    """
-    Decoder part of depth-net for depth completion
-    """
-
-    def __init__(self,
-                 num_ch_enc,
-                 scales=range(4),
-                 num_output_channels=1,
-                 use_skips=True,
-                 sparse=False):
+    def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True):
         super(DepthDecoder, self).__init__()
 
         self.num_output_channels = num_output_channels
@@ -34,14 +25,12 @@ class DepthDecoder(nn.Module):
 
         self.num_ch_enc = num_ch_enc
         self.num_ch_dec = np.array([16, 32, 64, 128, 256])
-        self.sparse = sparse
 
         # decoder
         self.convs = OrderedDict()
         for i in range(4, -1, -1):
             # upconv_0
-            num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i +
-                                                                           1]
+            num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i + 1]
             num_ch_out = self.num_ch_dec[i]
             self.convs[("upconv", i, 0)] = ConvBlock(num_ch_in, num_ch_out)
 
@@ -53,13 +42,10 @@ class DepthDecoder(nn.Module):
             self.convs[("upconv", i, 1)] = ConvBlock(num_ch_in, num_ch_out)
 
         for s in self.scales:
-            self.convs[("dispconv", s)] = Conv3x3(self.num_ch_dec[s],
-                                                  self.num_output_channels)
+            self.convs[("dispconv", s)] = Conv3x3(self.num_ch_dec[s], self.num_output_channels)
 
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
-        self.relu = nn.ReLU(inplace=True)
-        self.sparse = sparse
 
     def forward(self, input_features):
         self.outputs = {}
@@ -70,14 +56,10 @@ class DepthDecoder(nn.Module):
             x = self.convs[("upconv", i, 0)](x)
             x = [upsample(x)]
             if self.use_skips and i > 0:
-                x = x + [input_features[i - 1]]
+                x += [input_features[i - 1]]
             x = torch.cat(x, 1)
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
-                # if self.sparse:
-                #     self.outputs[("disp", i)] = self.convs[("dispconv", i)](x)
-                # else:
-                self.outputs[("disp", i)] = self.sigmoid(self.convs[("dispconv",
-                                                                     i)](x))
+                self.outputs[("disp", i)] = self.sigmoid(self.convs[("dispconv", i)](x))
 
         return self.outputs
