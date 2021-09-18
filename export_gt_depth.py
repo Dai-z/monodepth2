@@ -11,11 +11,9 @@ import os
 import argparse
 import numpy as np
 import PIL.Image as pil
-from cv2 import cv2
 
 from utils import readlines
 from kitti_utils import generate_depth_map
-from tqdm import tqdm
 
 
 def export_gt_depths_kitti():
@@ -30,7 +28,7 @@ def export_gt_depths_kitti():
                         type=str,
                         help='which split to export gt from',
                         required=True,
-                        choices=["eigen", "eigen_benchmark", "completion"])
+                        choices=["eigen", "eigen_benchmark"])
     opt = parser.parse_args()
 
     split_folder = os.path.join(os.path.dirname(__file__), "splits", opt.split)
@@ -39,21 +37,22 @@ def export_gt_depths_kitti():
     print("Exporting ground truth depths for {}".format(opt.split))
 
     gt_depths = []
-    side_map = {"2": '2', "3": '3', "l": '2', "r": '3'}
-    t = tqdm(total=len(lines))
     for line in lines:
 
-        folder, frame_id, side = line.split()
+        folder, frame_id, _ = line.split()
         frame_id = int(frame_id)
 
-        gt_depth_path = os.path.join(opt.data_path, folder, "proj_depth",
-                                     "groundtruth", "image_0" + side_map[side],
-                                     "{:010d}.png".format(frame_id))
-        gt_depth = cv2.imread(gt_depth_path, cv2.IMREAD_ANYDEPTH)
-        gt_depth = gt_depth.astype(np.float32) / 256
+        if opt.split == "eigen":
+            calib_dir = os.path.join(opt.data_path, folder.split("/")[0])
+            velo_filename = os.path.join(opt.data_path, folder,
+                                         "velodyne_points/data", "{:010d}.bin".format(frame_id))
+            gt_depth = generate_depth_map(calib_dir, velo_filename, 2, True)
+        elif opt.split == "eigen_benchmark":
+            gt_depth_path = os.path.join(opt.data_path, folder, "proj_depth",
+                                         "groundtruth", "image_02", "{:010d}.png".format(frame_id))
+            gt_depth = np.array(pil.open(gt_depth_path)).astype(np.float32) / 256
 
         gt_depths.append(gt_depth.astype(np.float32))
-        t.update()
 
     output_path = os.path.join(split_folder, "gt_depths.npz")
 

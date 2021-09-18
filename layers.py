@@ -33,7 +33,7 @@ def transformation_from_parameters(axisangle, translation, invert=False):
 
     if invert:
         R = R.transpose(1, 2)
-        t = -1 * t
+        t *= -1
 
     T = get_translation_matrix(t)
 
@@ -110,7 +110,7 @@ class ConvBlock(nn.Module):
         super(ConvBlock, self).__init__()
 
         self.conv = Conv3x3(in_channels, out_channels)
-        self.nonlin = nn.ELU(inplace=False)
+        self.nonlin = nn.ELU(inplace=True)
 
     def forward(self, x):
         out = self.conv(x)
@@ -187,8 +187,8 @@ class Project3D(nn.Module):
         pix_coords = cam_points[:, :2, :] / (cam_points[:, 2, :].unsqueeze(1) + self.eps)
         pix_coords = pix_coords.view(self.batch_size, 2, self.height, self.width)
         pix_coords = pix_coords.permute(0, 2, 3, 1)
-        pix_coords[..., 0] = pix_coords[..., 0] / (self.width - 1)
-        pix_coords[..., 1] = pix_coords[..., 1] / (self.height - 1)
+        pix_coords[..., 0] /= self.width - 1
+        pix_coords[..., 1] /= self.height - 1
         pix_coords = (pix_coords - 0.5) * 2
         return pix_coords
 
@@ -209,8 +209,8 @@ def get_smooth_loss(disp, img):
     grad_img_x = torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]), 1, keepdim=True)
     grad_img_y = torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]), 1, keepdim=True)
 
-    grad_disp_x = grad_disp_x * torch.exp(-grad_img_x)
-    grad_disp_y = grad_disp_y * torch.exp(-grad_img_y)
+    grad_disp_x *= torch.exp(-grad_img_x)
+    grad_disp_y *= torch.exp(-grad_img_y)
 
     return grad_disp_x.mean() + grad_disp_y.mean()
 

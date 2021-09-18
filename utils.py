@@ -10,13 +10,6 @@ import hashlib
 import zipfile
 from six.moves import urllib
 
-from cv2 import cv2
-import numpy as np
-
-
-def printc(s):
-    print('\033[36m{}\033[0m'.format(s))
-
 
 def readlines(filename):
     """Read all the lines in a text file and return as a list
@@ -60,34 +53,34 @@ def download_model_if_doesnt_exist(model_name):
     """
     # values are tuples of (<google cloud URL>, <md5 checksum>)
     download_paths = {
-        "mono_640x192": (
-            "https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_640x192.zip",
-            "a964b8356e08a02d009609d9e3928f7c"),
-        "stereo_640x192": (
-            "https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_640x192.zip",
-            "3dfb76bcff0786e4ec07ac00f658dd07"),
-        "mono+stereo_640x192": (
-            "https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_640x192.zip",
-            "c024d69012485ed05d7eaa9617a96b81"),
-        "mono_no_pt_640x192": (
-            "https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_no_pt_640x192.zip",
-            "9c2f071e35027c895a4728358ffc913a"),
-        "stereo_no_pt_640x192": (
-            "https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_no_pt_640x192.zip",
-            "41ec2de112905f85541ac33a854742d1"),
-        "mono+stereo_no_pt_640x192": (
-            "https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_no_pt_640x192.zip",
-            "46c3b824f541d143a45c37df65fbab0a"),
-        "mono_1024x320": (
-            "https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_1024x320.zip",
-            "0ab0766efdfeea89a0d9ea8ba90e1e63"),
-        "stereo_1024x320": (
-            "https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_1024x320.zip",
-            "afc2f2126d70cf3fdf26b550898b501a"),
-        "mono+stereo_1024x320": (
-            "https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_1024x320.zip",
-            "cdc5fc9b23513c07d5b19235d9ef08f7"),
-    }
+        "mono_640x192":
+            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_640x192.zip",
+             "a964b8356e08a02d009609d9e3928f7c"),
+        "stereo_640x192":
+            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_640x192.zip",
+             "3dfb76bcff0786e4ec07ac00f658dd07"),
+        "mono+stereo_640x192":
+            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_640x192.zip",
+             "c024d69012485ed05d7eaa9617a96b81"),
+        "mono_no_pt_640x192":
+            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_no_pt_640x192.zip",
+             "9c2f071e35027c895a4728358ffc913a"),
+        "stereo_no_pt_640x192":
+            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_no_pt_640x192.zip",
+             "41ec2de112905f85541ac33a854742d1"),
+        "mono+stereo_no_pt_640x192":
+            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_no_pt_640x192.zip",
+             "46c3b824f541d143a45c37df65fbab0a"),
+        "mono_1024x320":
+            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono_1024x320.zip",
+             "0ab0766efdfeea89a0d9ea8ba90e1e63"),
+        "stereo_1024x320":
+            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/stereo_1024x320.zip",
+             "afc2f2126d70cf3fdf26b550898b501a"),
+        "mono+stereo_1024x320":
+            ("https://storage.googleapis.com/niantic-lon-static/research/monodepth2/mono%2Bstereo_1024x320.zip",
+             "cdc5fc9b23513c07d5b19235d9ef08f7"),
+        }
 
     if not os.path.exists("models"):
         os.makedirs("models")
@@ -106,17 +99,12 @@ def download_model_if_doesnt_exist(model_name):
 
         model_url, required_md5checksum = download_paths[model_name]
 
-        if not check_file_matches_md5(required_md5checksum,
-                                      model_path + ".zip"):
-            print("-> Downloading pretrained model to {}".format(model_path +
-                                                                 ".zip"))
+        if not check_file_matches_md5(required_md5checksum, model_path + ".zip"):
+            print("-> Downloading pretrained model to {}".format(model_path + ".zip"))
             urllib.request.urlretrieve(model_url, model_path + ".zip")
 
-        if not check_file_matches_md5(required_md5checksum,
-                                      model_path + ".zip"):
-            print(
-                "   Failed to download a file which matches the checksum - quitting"
-            )
+        if not check_file_matches_md5(required_md5checksum, model_path + ".zip"):
+            print("   Failed to download a file which matches the checksum - quitting")
             quit()
 
         print("   Unzipping model...")
@@ -124,65 +112,3 @@ def download_model_if_doesnt_exist(model_name):
             f.extractall(model_path)
 
         print("   Model unzipped to {}".format(model_path))
-
-
-def vis_depth(depth,
-              image=None,
-              vis_type=None,
-              scale=-1,
-              save_file=False,
-              wait_key=0,
-              dilation=0,
-              color_map=cv2.COLORMAP_JET):
-    """[summary]
-
-    Args:
-        depth ([type]): [description]
-        image (np.array): [HxWxC] image of numpy array(OpenCV)
-        vis_type ([str]): visualize type. Defaults to None to skip visualization.
-        scale ([float]): scale for normalization. default to -1 using max value.
-        save_file (bool, optional): [description]. Defaults to False.
-
-    Returns:
-        [type]: [description]
-    """
-
-    # Visualize
-    depth = depth.copy()
-    if dilation > 0:
-        # dilation for visualization
-        depth = cv2.dilate(depth,
-                           kernel=np.ones((2, 2), np.uint8),
-                           iterations=dilation)
-
-    if scale <= 0:
-        scale = depth.max()
-    depth[depth > scale] = scale
-    vis = (depth / scale)
-    vis[vis > 1] = 1
-    vis[vis < 0] = 0
-
-    mask = vis[...] > 0
-    vis = cv2.cvtColor(np.uint8(vis * 255), cv2.COLOR_GRAY2BGR)
-    vis = cv2.applyColorMap(vis, color_map)
-
-    if vis_type == 'mask':
-        image = image.copy()
-        weight_depth = .8
-        image[mask, :] = np.uint8(weight_depth * vis[mask, :] +
-                                  (1 - weight_depth) * image[mask, :])
-        vis = image
-    elif vis_type == 'both':
-        vis = np.concatenate((image, vis), axis=0)
-    else:
-        print('Visualize type not supported. Select from ["mask", "both"].')
-        return
-    if save_file:
-        cv2.imwrite('vis.png', vis)
-
-    cv2.namedWindow('vis', cv2.WINDOW_NORMAL)
-    cv2.imshow('vis', vis)
-    key = cv2.waitKey(wait_key)
-    if key == 113:
-        exit()
-    return vis

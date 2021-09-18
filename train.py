@@ -13,12 +13,6 @@ options = MonodepthOptions()
 opts = options.parse()
 
 
-# set OMP_NUM_THREADS = number of CPU processors/number of processes in default to neither overload or waste CPU threads
-
-# python -m torch.distributed.launch --nproc_per_node=2 --node_rank=0 --master_port=2333 train.py
-# ---args---
-# nproc_per_node: num of gpus
-
 if __name__ == "__main__":
     trainer = Trainer(opts)
     trainer.train()
