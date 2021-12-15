@@ -19,15 +19,30 @@ cv2.setNumThreads(
     0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
 splits_dir = os.path.join(os.path.dirname(__file__), "splits")
+PRINT_ONCE = False
+NUM_SCALE = 700
+NOISE = 20
+SPECIFY_SEQ = 'MSBuild2018_200'
 
 # Models which were trained with stereo supervision were trained with a nominal
 # baseline of 0.1 units. The KITTI rig has a baseline of 54cm. Therefore,
 # to convert our stereo predictions to real-world scale we multiply our depths by 5.4.
 
-def get_ratio(pred_depth, gt_depth, num_used_pts=-1, noise_on_gt = 0):
+
+def get_ratio(pred_depth, gt_depth, num_used_pts=-1, noise_on_gt=0):
+    global PRINT_ONCE
+    if not PRINT_ONCE:
+        if num_used_pts < 0:
+            print(f'{pred_depth.shape[0]} points are used for scale')
+        else:
+            print(f'{num_used_pts} points are used for scale')
+        print(f'{noise_on_gt}[m] noise added.')
+        PRINT_ONCE = True
+
     # gauss noise(m)
     if noise_on_gt > 0:
-        noise_gt = gt_depth + np.random.normal(0, noise_on_gt, gt_depth.shape[0])
+        noise_gt = gt_depth + np.random.normal(0, noise_on_gt,
+                                               gt_depth.shape[0])
     else:
         noise_gt = gt_depth
     if num_used_pts < 0:
@@ -37,6 +52,7 @@ def get_ratio(pred_depth, gt_depth, num_used_pts=-1, noise_on_gt = 0):
         choosed_idx = np.random.choice(num_pts, num_used_pts)
         ratio = noise_gt[choosed_idx] / pred_depth[choosed_idx]
     return np.median(ratio)
+
 
 def compute_errors(gt, pred):
     """Computation of error metrics between predicted and ground truth depths
@@ -175,10 +191,15 @@ def evaluate(opt):
     errors = []
     ratios = []
 
+    if len(SPECIFY_SEQ) > 0:
+        print('Select', SPECIFY_SEQ)
     for i in range(pred_disps.shape[0]):
-
+        if len(SPECIFY_SEQ) > 0 and not SPECIFY_SEQ in filenames[i]:
+            continue
         gt_depth = cv2.imread(
-            os.path.join(opt.data_path, filenames[i].replace('rgb', 'depth').replace(' ', '/')),
+            os.path.join(opt.data_path,
+                         filenames[i].replace('rgb', 'depth').replace(' ',
+                                                                      '/')),
             cv2.IMREAD_ANYDEPTH)
         gt_depth = gt_depth / 255.
         gt_height, gt_width = gt_depth.shape[:2]
@@ -193,7 +214,7 @@ def evaluate(opt):
 
         pred_depth *= opt.pred_depth_scale_factor
         if not opt.disable_median_scaling:
-            ratio = get_ratio(pred_depth, gt_depth, -1 , 0)
+            ratio = get_ratio(pred_depth, gt_depth, NUM_SCALE, NOISE)
             ratios.append(ratio)
             pred_depth *= ratio
 
@@ -205,14 +226,15 @@ def evaluate(opt):
     if not opt.disable_median_scaling:
         ratios = np.array(ratios)
         med = np.median(ratios)
-        print(" Scaling ratios | med: {:0.3f} | std: {:0.3f}".format(
-            med, np.std(ratios / med)))
+        print(
+            " Scaling ratios | med: {:0.3f} | min: {:0.3f} | max: {:0.3f} | std: {:0.3f}"
+            .format(med, ratios.min(), ratios.max(), np.std(ratios / med)))
 
+    print(f'Total samples: {len(errors)}')
     mean_errors = np.array(errors).mean(0)
 
-    print("\n  " +
-          ("{:>8} | " *
-           8).format("abs_rel", "sq_rel", "mae(m)", "rmse(m)", "rmse_log", "a1", "a2", "a3"))
+    print("\n  " + ("{:>8} | " * 8).format(
+        "abs_rel", "sq_rel", "mae(m)", "rmse(m)", "rmse_log", "a1", "a2", "a3"))
     print(("&{: 8.3f}  " * 8).format(*mean_errors.tolist()) + "\\\\")
     print("\n-> Done!")
 

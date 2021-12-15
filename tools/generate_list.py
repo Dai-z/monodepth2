@@ -22,12 +22,21 @@ val_txt = []
 seqs = list(seqs)
 seqs.sort()
 for idx, seq in enumerate(seqs):
+    # Skip unvalid directories
+    if 'det' in seq or '0345' in seq:
+        continue
     files = os.listdir(join(data_dir, seq, TYPE))
     files.sort()
     name_mapping = lambda x : f'{seq}/{TYPE} {x}\n'
-    num_train = int(len(files) * 0.8)
-    train_txt += list(map(name_mapping, files[1:num_train]))
-    val_txt += list(map(name_mapping, files[num_train:-1]))
+
+    if '000' in seq:
+        val_txt += list(map(name_mapping, files[1:-1]))
+    else:
+        train_txt += list(map(name_mapping, files[1:-1]))
+
+    # num_train = int(len(files) * 0.8)
+    # train_txt += list(map(name_mapping, files[1:num_train]))
+    # val_txt += list(map(name_mapping, files[num_train:-1]))
 
     # if idx == len(seqs) - 1:
     #     val_txt += list(map(name_mapping, files[1:-1]))
