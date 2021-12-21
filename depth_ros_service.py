@@ -27,6 +27,9 @@ def parse_args():
     parser.add_argument('--model_folder',
                         type=str,
                         help="name of model to load")
+    parser.add_argument("--debug",
+                        help='if set, show debug message',
+                        action='store_true')
     parser.add_argument("--no_cuda",
                         help='if set, disables CUDA',
                         action='store_true')
@@ -36,6 +39,7 @@ def parse_args():
 
 def handle_image(req: DepthRequest, encoder, decoder, feed_width, feed_height,
                  device):
+    start = rospy.Time.now()
     cv_bridge = CvBridge()
 
     image = cv_bridge.imgmsg_to_cv2(req.image)
@@ -55,13 +59,18 @@ def handle_image(req: DepthRequest, encoder, decoder, feed_width, feed_height,
 
     disp_resized = disp_resized.detach().cpu().squeeze().numpy()
     msg = cv_bridge.cv2_to_imgmsg(disp_resized.astype(np.float32))
+    end = rospy.Time.now()
+    rospy.logdebug(f'depth estimation cost: {(end-start).to_sec()*1000}ms')
     return DepthResponse(msg)
 
 
 def main():
-    rospy.init_node('depth_service')
-
     args = parse_args()
+
+    if args.debug:
+        rospy.init_node('depth_service', log_level=rospy.DEBUG)
+    else:
+        rospy.init_node('depth_service', log_level=rospy.INFO)
 
     if torch.cuda.is_available() and not args.no_cuda:
         device = torch.device("cuda")
